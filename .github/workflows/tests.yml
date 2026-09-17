@@ -1,0 +1,71 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # Install from pyproject WITHOUT --no-deps, deliberately.
+      #
+      # --no-deps is right when installing into conda (it stops pip
+      # shadowing conda's numpy/scipy), and the docs say so. But using it
+      # here would install nothing declared, and the first version of this
+      # workflow did exactly that -- hiding that requirements.txt had
+      # omitted PyYAML, which hvi_emp needs at import time to read
+      # conf/materials/*.yaml. Resolving the real dependency set is the
+      # point: it keeps pyproject.toml honest.
+      #
+      # The optional solvers (LAMMPS, M2C, WarpX, ...) are NOT installed.
+      # Every bridge generates its decks without its solver present, and CI
+      # is the cheapest place to keep that true. Solver tests self-skip.
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pytest
+
+      - name: Import with nothing optional present
+        run: python -c "import hvi_emp; print(hvi_emp.__version__)"
+
+      - name: Show what is available
+        run: |
+          python -c "from hvi_emp.solvers import availability; \
+                     [print(f'  {k:18s} {v}') for k, v in availability().items()]"
+
+      - name: Run tests
+        run: pytest tests/ -q --durations=10
+
+  doctor:
+    # Runs the environment report end to end. It used to be killable by a
+    # single broken solver (an MPI_Abort took the whole process down), so
+    # "doctor completes on a machine with nothing installed" is worth
+    # asserting rather than assuming.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: |
+          python -m pip install --upgrade pip
+          pip install numpy scipy
+          pip install -e . --no-deps
+      - run: python -m hvi_emp doctor

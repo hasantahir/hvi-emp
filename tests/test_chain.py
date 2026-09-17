@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pytest
 
+from hvi_emp.solvers import have_lammps
+
 from hvi_emp.chain import (STAGE_INFO, STAGE_ORDER, Manifest, StageResult,
                            outputs_exist, report, write_stage_script)
 from hvi_emp.viz.composite import (CHAPTER_DEFAULTS, COMPOSITE_NOTICE,
@@ -372,6 +374,9 @@ class TestMDScales:
         assert cfg.resolved_cells() == (10, 10, 7)
 
 
+@pytest.mark.skipif(not have_lammps(),
+                    reason="lammps not importable; the md stage reports "
+                           "'blocked' before it reaches the size guard")
 class TestMDSizeGuard:
     """A 10-hour MD run must not silently occupy the terminal, and a 2-minute
     one must not need a scheduler."""

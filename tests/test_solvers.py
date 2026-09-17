@@ -29,6 +29,16 @@ from hvi_emp.solvers.warpx_stage3 import (WarpXEMPConfig, write_picmi_script,
 
 warnings.simplefilter("ignore")
 
+#: Several tests below exercise code paths that only exist once LAMMPS is
+#: importable -- the "installed but broken" diagnosis, the MPI-abort probe,
+#: the version shim. With no LAMMPS they do not fail meaningfully, they
+#: just report "No module named 'lammps'", so they skip instead. CI runs
+#: without any solver on purpose, and a red build that only means "the
+#: optional thing is optional" trains people to ignore CI.
+needs_lammps = pytest.mark.skipif(
+    not have_lammps(), reason="lammps not importable")
+
+
 
 @pytest.fixture(scope="module")
 def scenario():
@@ -399,6 +409,7 @@ def test_lammps_diagnostics_shape():
         assert d["hint"], "a failure must come with an actionable hint"
 
 
+@needs_lammps
 def test_lammps_diagnostics_distinguishes_missing_from_broken(monkeypatch):
     """'Not installed' and 'installed but will not load' need different fixes,
     so they must not be collapsed into one message.
@@ -878,6 +889,7 @@ def test_shim_only_touches_lammps():
         assert md.version("numpy") == real_numpy
 
 
+@needs_lammps
 def test_import_lammps_works():
     from hvi_emp.solvers import import_lammps
     mod = import_lammps()
@@ -928,6 +940,7 @@ _ABORT_SRC = (
 )
 
 
+@needs_lammps
 def test_mpi_abort_does_not_kill_the_caller(monkeypatch):
     """MPI_Abort must become a report, not terminate the interpreter.
 
@@ -944,6 +957,7 @@ def test_mpi_abort_does_not_kill_the_caller(monkeypatch):
     assert "MPI" in d["reason"]
 
 
+@needs_lammps
 def test_mpi_abort_is_not_blamed_on_lammps(monkeypatch):
     """The hint must not send the user to reinstall LAMMPS."""
     import hvi_emp.solvers as S

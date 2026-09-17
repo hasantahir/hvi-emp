@@ -1,6 +1,7 @@
 numpy>=1.24  # 2.x preferred; np.trapz/trapezoid handled by hvi_emp/_compat.py
 scipy>=1.10
-matplotlib>=3.6
+PyYAML>=6.0  # conf/materials/*.yaml is read at IMPORT time -- not optional
+matplotlib>=3.6  # examples and figures only; the package imports without it
 pytest>=7.0
 # optional, for the production-solver bridges:
 #   lammps mpich picmistandard openpmd-api
