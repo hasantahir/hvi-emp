@@ -1,0 +1,12 @@
+# Defaults for the Snakemake workflow. Override on the command line:
+#   snakemake --config tag=fletcher scenario=fletcher_w_al sweep=fletcher_series
+conf_dir: hvi_emp/conf
+output_dir: results
+tag: run
+scenario: default
+sweep: velocity
+expansion_model: "1T"
+
+# Only used by the `solver_decks` rule.
+gpu: RTX5090
+n_gpu: 1

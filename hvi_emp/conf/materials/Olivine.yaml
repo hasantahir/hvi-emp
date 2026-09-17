@@ -1,0 +1,39 @@
+# Stony meteoroid analogue (Fo90).
+# Sources: Melosh (1989) Table AII.2 (Fo90 olivine); Ahrens & Johnson (1995)
+#
+# Units are SI unless the key says otherwise. Energies suffixed
+# _eV are in electron-volts and converted on load.
+
+name: Olivine
+
+# --- shock EOS: linear Us = c0 + s*up, Mie-Grueneisen ---
+rho0: 3300.0            # kg/m^3
+c0: 4900.0               # m/s, bulk sound speed
+s: 1.47                  # -, Us-Up slope
+gamma0: 1.1             # -, Grueneisen at rho0
+us_up_valid_to: 13000   # m/s, beyond this the linear fit is extrapolated
+
+# --- thermophysical ---
+cv_solid: 815.0         # J/(kg K)
+T_melt: 2163.0            # K
+T_vap: 3200.0             # K, 1 atm boiling point
+L_fusion: 400000         # J/kg
+L_vap: 8.0e+06            # J/kg
+E_cohesive_eV: 5.0     # eV/atom, sublimation energy
+
+# --- atomic ---
+A: 20.1                 # amu, mean atomic mass
+Z: 10                    # -, atomic number
+work_function_eV: 4.5
+
+# Successive ionisation potentials I, II, III ... and the
+# ground-state statistical weights g_0, g_1, ... (one more than E_ion).
+E_ion_eV:
+  - 7.6462
+  - 15.035
+  - 80.144
+g_ion:
+  - 1.0
+  - 2.0
+  - 1.0
+  - 2.0

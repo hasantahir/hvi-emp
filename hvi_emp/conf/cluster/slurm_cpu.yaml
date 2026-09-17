@@ -1,0 +1,22 @@
+# Slurm, CPU only. This covers the whole reduced chain: Stages 1-4 are
+# NumPy/SciPy and never touch a GPU.
+#
+# cpus_per_task is what the process pool will see. Requesting 8 and then
+# forking 48 workers is the standard way to be thrown off a shared cluster,
+# so hvi_emp.cluster pins the pool to this number rather than to the node's
+# core count.
+backend: slurm
+partition: null          # set to your site's CPU partition
+account: null            # set if your site requires charging codes
+qos: null
+time: "02:00:00"
+cpus_per_task: 16
+mem_per_cpu: 2G
+gpus: 0
+nodes: 1
+ntasks: 1
+array_throttle: null     # e.g. 8 to cap concurrent array tasks
+modules: []              # e.g. ["Python/3.11.3-GCCcore-12.3.0"]
+conda_env: null
+venv: null
+extra_directives: []

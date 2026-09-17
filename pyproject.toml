@@ -1,0 +1,97 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hvi-emp"
+version = "1.0.0"
+description = "Hypervelocity impact plasma generation and electromagnetic pulse simulation framework"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{name = "HVI-EMP contributors"}]
+keywords = [
+    "hypervelocity impact",
+    "space debris",
+    "plasma",
+    "electromagnetic pulse",
+    "spacecraft charging",
+    "micrometeoroid",
+    "shock physics",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Astronomy",
+]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    # The material library is conf/materials/*.yaml, read at import time, so
+    # PyYAML is a core requirement rather than an extra. pydantic, hydra and
+    # snakemake remain optional -- see [project.optional-dependencies].
+    "PyYAML>=6.0",
+]
+
+# NOTE ON THE LICENCE FIELD -- deliberately absent from [project].
+#
+# The licence is MIT; see the LICENSE file, which is attached to the built
+# distribution by `[tool.setuptools] license-files` below.
+#
+# Neither PEP 621 spelling is safe to put here:
+#   license = {text = "MIT"}   -> deprecated on setuptools >= 77 (warns on
+#                                 every build, removed 2027)
+#   license = "MIT"            -> PEP 639 SPDX form; *hard-fails* on any
+#                                 environment with setuptools >= 77 but
+#                                 packaging < 24.2, with
+#                                 `ImportError: Cannot import
+#                                 packaging.licenses`
+# The second combination is common in practice (Homebrew Python, conda, any
+# venv whose setuptools was upgraded but packaging was not). Omitting the
+# field entirely builds cleanly on every setuptools from 61 to current, needs
+# no `packaging` version at all, and still ships the licence file.
+
+[project.optional-dependencies]
+plots = ["matplotlib>=3.6"]
+dev = ["pytest>=7.0", "matplotlib>=3.6"]
+md = ["lammps", "mpich"]                  # Stage-1 LAMMPS bridge, in-process
+pic = ["picmistandard", "openpmd-api"]    # Stage-3 WarpX deck gen + post-proc
+solvers = ["lammps", "mpich", "picmistandard", "openpmd-api"]
+
+# Configuration, validation and orchestration. Optional on purpose: the core
+# still runs on NumPy + SciPy alone, using a fallback YAML composer and a
+# dataclass validator with identical rules, so the framework stays
+# installable on a locked-down cluster login node.
+workflow = [
+    "pydantic>=2.0",       # schema validation; v1 is not supported
+    "hydra-core>=1.3",     # config composition and overrides
+    "omegaconf>=2.3",
+    "PyYAML>=6.0",
+    "snakemake>=7.32",     # orchestration
+]
+# Pick the wheel matching your CUDA major version -- they are not
+# interchangeable. `python -m hvi_emp doctor` names the right one.
+gpu = ["cupy-cuda12x"]     # CUDA 12.x; use cupy-cuda11x / cupy-cuda13x otherwise
+
+[project.scripts]
+hvi-emp = "hvi_emp.cli:main"
+
+[tool.setuptools]
+packages = ["hvi_emp", "hvi_emp.solvers", "hvi_emp.viz"]
+license-files = ["LICENSE"]
+
+# The material library is data, not code, and it must ship with the wheel --
+# `materials.py` loads conf/materials/*.yaml at import time, so a package
+# without it cannot import at all.
+[tool.setuptools.package-data]
+# The default configuration tree lives *inside* the package. `materials.py`
+# reads conf/materials/*.yaml at import time, so a wheel without it cannot
+# import at all -- and a conf/ at the repo root does not survive a
+# non-editable `pip install .`. Point $HVI_EMP_CONF or $HVI_EMP_MATERIALS at
+# your own tree to override without touching the installed package.
+hvi_emp = ["conf/*.yaml", "conf/*/*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::RuntimeWarning"]

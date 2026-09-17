@@ -1,0 +1,228 @@
+# hvi_emp workflow.
+#
+#   snakemake -n                                   # DAG only, run nothing
+#   snakemake --cores 16                           # locally
+#   snakemake --profile workflow/profiles/slurm    # on the cluster
+#   snakemake --config tag=fletcher scenario=fletcher_w_al sweep=fletcher_series
+#
+# Why an orchestrator on top of a sweep that already parallelises
+# ---------------------------------------------------------------
+# `velocity_sweep` spreads N scenarios over one machine's cores. That is the
+# right tool for one machine. It is the wrong tool the moment you want:
+#
+#   * to resume after 3 of 40 points failed, without recomputing 37;
+#   * per-stage resources, because the reduced chain wants 4 CPUs and a
+#     PIConGPU deck wants a GPU and 12 hours;
+#   * a DAG you can inspect (`-n`) before it charges an allocation;
+#   * provenance -- which inputs produced which output, checked by mtime.
+#
+# Snakemake gives all four, and hands each rule to Slurm through the profile
+# in workflow/profiles/slurm. Each sweep point is a separate job, so the
+# scheduler can backfill them into gaps rather than waiting for one wide
+# reservation.
+#
+# The unit of work is `python -m hvi_emp.run --sweep-index i`, the same
+# command an sbatch array runs. There is one code path, not two.
+
+import json
+from pathlib import Path
+
+configfile: "workflow/config.yaml"
+
+CONF_DIR   = config.get("conf_dir", "conf")
+OUTPUT     = config.get("output_dir", "results")
+TAG        = config.get("tag", "run")
+SCENARIO   = config.get("scenario", "default")
+SWEEP      = config.get("sweep", "velocity")
+MODEL      = config.get("expansion_model", "1T")
+
+OVERRIDES = [f"scenario={SCENARIO}", f"sweep={SWEEP}", f"tag={TAG}",
+             f"scenario.expansion_model={MODEL}"]
+
+RUN = Path(OUTPUT) / TAG
+
+
+def sweep_points():
+    """How many points this sweep has -- resolved by the schema, not guessed.
+
+    Importing hvi_emp here rather than hard-coding a count means the DAG and
+    the array size cannot disagree. A Snakefile that says 14 while the config
+    says 20 produces six silently missing points.
+    """
+    import sys
+    sys.path.insert(0, str(Path(workflow.basedir).parent))
+    from hvi_emp.config import load_config, to_run_spec
+    cfg = load_config(OVERRIDES, conf_dir=Path(CONF_DIR))
+    spec = to_run_spec(cfg)
+    return len(spec.sweep.resolve()) if spec.sweep else 1
+
+
+N_POINTS = sweep_points()
+INDICES = [f"{i:04d}" for i in range(N_POINTS)]
+
+
+rule all:
+    input:
+        RUN / "summary.json",
+        RUN / "summary.csv",
+        RUN / "provenance.json",
+
+
+rule validate_config:
+    """Fail before any compute if the configuration is wrong.
+
+    This rule exists to move failure to second zero rather than hour three.
+    It costs a fraction of a second and has caught, in this project alone,
+    a YAML float that parsed as a string and an ionisation ladder one
+    statistical weight short.
+    """
+    output:
+        RUN / "config.resolved.yaml"
+    params:
+        overrides = " ".join(OVERRIDES),
+        conf = CONF_DIR
+    resources:
+        runtime = 5, mem_mb = 1000, cpus = 1
+    shell:
+        "mkdir -p {RUN} && "
+        "python -m hvi_emp.run --config-dir {params.conf} "
+        "--print-config {params.overrides} > {output}"
+
+
+rule scenario_point:
+    """One sweep point. This is the parallel unit the scheduler sees."""
+    input:
+        RUN / "config.resolved.yaml"
+    output:
+        RUN / "point_{index}" / "result.json"
+    params:
+        overrides = " ".join(OVERRIDES),
+        conf = CONF_DIR,
+        idx = lambda w: int(w.index)
+    resources:
+        # 2T is ~5x the cost of 1T; the walltime follows the model rather
+        # than a single number that is wrong for one of them.
+        runtime = 20 if MODEL == "1T" else 90,
+        mem_mb = 2000 if MODEL == "1T" else 4000,
+        cpus = 1
+    log:
+        RUN / "logs" / "point_{index}.log"
+    shell:
+        "python -m hvi_emp.run --config-dir {params.conf} "
+        "--sweep-index {params.idx} --output-dir {OUTPUT} "
+        "{params.overrides} > {log} 2>&1"
+
+
+rule aggregate:
+    """Collect the points into one table.
+
+    `input` lists every point explicitly, so Snakemake will not run this
+    until all of them exist. A partial sweep therefore cannot become a
+    complete-looking summary -- which, on a log-log charge-yield plot, is
+    indistinguishable from real physics.
+    """
+    input:
+        expand(str(RUN / "point_{index}" / "result.json"), index=INDICES)
+    output:
+        json = RUN / "summary.json",
+        csv  = RUN / "summary.csv"
+    resources:
+        runtime = 5, mem_mb = 1000, cpus = 1
+    run:
+        rows = []
+        for path in input:
+            with open(path) as fh:
+                rows.append(json.load(fh))
+        rows.sort(key=lambda r: r.get("velocity_m_s", 0.0))
+        with open(output.json, "w") as fh:
+            json.dump(rows, fh, indent=2, sort_keys=True)
+
+        cols = [k for k in rows[0] if not isinstance(rows[0][k], list)]
+        with open(output.csv, "w") as fh:
+            fh.write(",".join(cols) + "\n")
+            for r in rows:
+                fh.write(",".join(str(r.get(c, "")) for c in cols) + "\n")
+
+
+rule provenance:
+    """Record what produced this directory.
+
+    Cheap, and the difference between a result you can defend in six months
+    and one you cannot.
+    """
+    input:
+        RUN / "summary.json"
+    output:
+        RUN / "provenance.json"
+    resources:
+        runtime = 5, mem_mb = 500, cpus = 1
+    run:
+        import platform, socket, subprocess, sys, time
+        sys.path.insert(0, str(Path(workflow.basedir).parent))
+        from hvi_emp.run import _versions
+
+        def git(*args):
+            try:
+                return subprocess.run(["git", *args], capture_output=True,
+                                      text=True, timeout=5).stdout.strip()
+            except Exception:
+                return None
+
+        with open(output[0], "w") as fh:
+            json.dump({
+                "tag": TAG, "scenario": SCENARIO, "sweep": SWEEP,
+                "expansion_model": MODEL, "n_points": N_POINTS,
+                "overrides": OVERRIDES,
+                "completed_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                               time.gmtime()),
+                "hostname": socket.gethostname(),
+                "platform": platform.platform(),
+                "versions": _versions(),
+                "git_commit": git("rev-parse", "HEAD"),
+                "git_dirty": bool(git("status", "--porcelain")),
+            }, fh, indent=2, sort_keys=True)
+
+
+rule solver_decks:
+    """Generate Idefix and PIConGPU input sets for one scenario.
+
+    Not part of `all`: these are inputs to external GPU codes, wanted
+    occasionally rather than every run. Ask for them by name:
+
+        snakemake results/<tag>/decks/README.txt --cores 1
+    """
+    input:
+        RUN / "config.resolved.yaml"
+    output:
+        RUN / "decks" / "README.txt"
+    resources:
+        runtime = 10, mem_mb = 2000, cpus = 1
+    run:
+        import sys
+        sys.path.insert(0, str(Path(workflow.basedir).parent))
+        from hvi_emp import run_scenario
+        from hvi_emp.config import load_config, to_run_spec
+        from hvi_emp.solvers.idefix_stage2 import (gpu_plan,
+                                                   write_problem_directory)
+
+        spec = to_run_spec(load_config(OVERRIDES, conf_dir=Path(CONF_DIR)))
+        s = spec.scenario
+        sc = run_scenario(s.projectile, s.target, mass=s.mass,
+                          velocity=s.velocity)
+
+        out = Path(output[0]).parent
+        out.mkdir(parents=True, exist_ok=True)
+        from hvi_emp.solvers.idefix_stage2 import fletcher_idefix_config
+        cfg = fletcher_idefix_config("fig6_parallel")
+        info = write_problem_directory(cfg, str(out / "idefix"),
+                                       gpu_arch="BLACKWELL120", mpi=True)
+        plan = gpu_plan(cfg, config.get("gpu", "RTX5090"),
+                        int(config.get("n_gpu", 1)))
+        Path(output[0]).write_text(
+            "Idefix problem directory: idefix/\n"
+            f"cmake: {info['cmake']}\n"
+            f"run:   {plan['command']}\n"
+            f"arch:  {plan['kokkos_arch']}\n"
+            f"memory: {plan['memory_GB_per_rank']:.2f} GB/rank of "
+            f"{plan['memory_budget_GB']:.1f} GB usable\n"
+            + "".join(f"! {w}\n" for w in plan["notes"]))

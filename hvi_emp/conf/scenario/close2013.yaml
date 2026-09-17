@@ -1,0 +1,12 @@
+# Close et al., Phys. Plasmas 20, 092102 (2013): the charge-yield and
+# 916 MHz measurements the framework is validated against.
+defaults:
+  - default
+
+projectile: Fe
+target: Al
+mass: 0.000000000001
+velocity: 50000.0
+expansion_model: "2T"
+r_sensor: 0.30
+bands: [315.0e+6, 916.0e+6]

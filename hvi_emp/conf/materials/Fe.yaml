@@ -1,0 +1,39 @@
+# Iron -- the reference metallic micrometeoroid/debris projectile.
+# Sources: Marsh, LASL Shock Hugoniot Data (1980); CRC Handbook 97th ed.; NIST ASD
+#
+# Units are SI unless the key says otherwise. Energies suffixed
+# _eV are in electron-volts and converted on load.
+
+name: Fe
+
+# --- shock EOS: linear Us = c0 + s*up, Mie-Grueneisen ---
+rho0: 7870.0            # kg/m^3
+c0: 3955.0               # m/s, bulk sound speed
+s: 1.58                  # -, Us-Up slope
+gamma0: 1.69             # -, Grueneisen at rho0
+us_up_valid_to: 15000   # m/s, beyond this the linear fit is extrapolated
+
+# --- thermophysical ---
+cv_solid: 449.0         # J/(kg K)
+T_melt: 1811.0            # K
+T_vap: 3134.0             # K, 1 atm boiling point
+L_fusion: 247000         # J/kg
+L_vap: 6.09e+06            # J/kg
+E_cohesive_eV: 4.28     # eV/atom, sublimation energy
+
+# --- atomic ---
+A: 55.845                 # amu, mean atomic mass
+Z: 26                    # -, atomic number
+work_function_eV: 4.67
+
+# Successive ionisation potentials I, II, III ... and the
+# ground-state statistical weights g_0, g_1, ... (one more than E_ion).
+E_ion_eV:
+  - 7.9025
+  - 16.1992
+  - 30.651
+g_ion:
+  - 25.0
+  - 30.0
+  - 25.0
+  - 6.0

@@ -1,0 +1,49 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# --- generated figures (examples regenerate them) ---
+figures/*.png
+figures/*.pdf
+
+# --- generated solver decks and run directories ---
+# All reproducible from the bridges; committing them adds churn without
+# adding information. Regenerate with examples/07 or scripts/run_full_chain.
+fletcher2021/
+full_chain/
+m2c_test/
+run_*/
+*_out/
+
+# --- solver output ---
+results/
+AtomicData/
+*.vtr
+*.vti
+*.vtp
+*.pvd
+*.dump
+*.log
+solution_*
+*_probes.txt
+
+# --- LAMMPS ---
+log.lammps
+in.impact
+
+# --- transfer archives (the repo replaces these) ---
+*.zip
+*.bundle
+
+# --- editors / OS ---
+.DS_Store
+*.swp
+.idea/
+.vscode/

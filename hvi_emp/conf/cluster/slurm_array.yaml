@@ -1,0 +1,10 @@
+# Slurm array job: one task per sweep point. This is the right shape for a
+# parameter sweep -- N independent short jobs backfill into a busy queue far
+# better than one long wide job, and a single failure costs one point rather
+# than the whole sweep.
+defaults:
+  - slurm_cpu
+
+time: "00:30:00"
+cpus_per_task: 4
+array_throttle: 16

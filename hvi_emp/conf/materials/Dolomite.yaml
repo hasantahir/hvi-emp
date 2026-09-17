@@ -1,0 +1,39 @@
+# Carbonate -- the AVGR target material.
+# Sources: Melosh (1989) Table AII.2; the AVGR target material
+#
+# Units are SI unless the key says otherwise. Energies suffixed
+# _eV are in electron-volts and converted on load.
+
+name: Dolomite
+
+# --- shock EOS: linear Us = c0 + s*up, Mie-Grueneisen ---
+rho0: 2860.0            # kg/m^3
+c0: 4500.0               # m/s, bulk sound speed
+s: 1.6                  # -, Us-Up slope
+gamma0: 1.0             # -, Grueneisen at rho0
+us_up_valid_to: 10000   # m/s, beyond this the linear fit is extrapolated
+
+# --- thermophysical ---
+cv_solid: 920.0         # J/(kg K)
+T_melt: 1600.0            # K
+T_vap: 2100.0             # K, 1 atm boiling point
+L_fusion: 300000         # J/kg
+L_vap: 5.0e+06            # J/kg
+E_cohesive_eV: 4.0     # eV/atom, sublimation energy
+
+# --- atomic ---
+A: 30.7                 # amu, mean atomic mass
+Z: 15                    # -, atomic number
+work_function_eV: 3.5
+
+# Successive ionisation potentials I, II, III ... and the
+# ground-state statistical weights g_0, g_1, ... (one more than E_ion).
+E_ion_eV:
+  - 6.1132
+  - 11.8717
+  - 50.913
+g_ion:
+  - 1.0
+  - 2.0
+  - 1.0
+  - 6.0

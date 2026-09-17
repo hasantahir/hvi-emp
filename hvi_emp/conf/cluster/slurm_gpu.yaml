@@ -1,0 +1,16 @@
+# Slurm with a GPU. Only needed for the external solvers (Idefix,
+# PIConGPU, WarpX, GPU LAMMPS) and for hvi_emp.accel's CuPy paths.
+#
+# The reduced chain does NOT need this -- a Stage-2 expansion is a
+# sequential ODE on a 24-element state vector, and a GPU cannot help it.
+# Requesting a GPU for a pure hvi_emp run wastes an allocation and will
+# queue longer for no benefit.
+defaults:
+  - slurm_cpu
+
+partition: null          # set to your site's GPU partition
+time: "12:00:00"
+cpus_per_task: 8
+mem_per_cpu: 4G
+gpus: 1
+gpu_type: null           # e.g. "a100" -> --gres=gpu:a100:1

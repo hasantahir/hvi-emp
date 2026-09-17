@@ -1,0 +1,15 @@
+# A 1 mm aluminium debris particle at LEO closing speed.
+#
+# Debris and micrometeoroid populations are quoted by SIZE, so this scenario
+# is specified by `diameter` rather than `mass`. The schema converts it with
+# the projectile material's density; give one or the other, never both, which
+# is why `mass` is explicitly null here.
+defaults:
+  - default
+
+projectile: Al
+target: Al
+mass: null
+diameter: 0.001        # m -- 1 mm. NOTE: metres, not mm.
+velocity: 10000.0      # m/s, typical LEO debris closing speed
+angle_deg: 45.0        # oblique, which is the common case

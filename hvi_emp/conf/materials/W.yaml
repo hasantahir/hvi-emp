@@ -1,0 +1,39 @@
+# Tungsten -- dense projectile used in Fletcher (NRL 2021).
+# Sources: Marsh, LASL Shock Hugoniot Data (1980); CRC Handbook 97th ed.; NIST ASD
+#
+# Units are SI unless the key says otherwise. Energies suffixed
+# _eV are in electron-volts and converted on load.
+
+name: W
+
+# --- shock EOS: linear Us = c0 + s*up, Mie-Grueneisen ---
+rho0: 19240.0            # kg/m^3
+c0: 4029.0               # m/s, bulk sound speed
+s: 1.237                  # -, Us-Up slope
+gamma0: 1.54             # -, Grueneisen at rho0
+us_up_valid_to: 15000   # m/s, beyond this the linear fit is extrapolated
+
+# --- thermophysical ---
+cv_solid: 132.0         # J/(kg K)
+T_melt: 3695.0            # K
+T_vap: 5828.0             # K, 1 atm boiling point
+L_fusion: 191000         # J/kg
+L_vap: 4.48e+06            # J/kg
+E_cohesive_eV: 8.9     # eV/atom, sublimation energy
+
+# --- atomic ---
+A: 183.84                 # amu, mean atomic mass
+Z: 74                    # -, atomic number
+work_function_eV: 4.55
+
+# Successive ionisation potentials I, II, III ... and the
+# ground-state statistical weights g_0, g_1, ... (one more than E_ion).
+E_ion_eV:
+  - 7.864
+  - 16.37
+  - 26.0
+g_ion:
+  - 5.0
+  - 6.0
+  - 9.0
+  - 10.0

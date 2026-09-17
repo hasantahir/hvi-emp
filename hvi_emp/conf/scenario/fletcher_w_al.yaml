@@ -1,0 +1,11 @@
+# Fletcher (NRL/MR/6757--20-10,138): tungsten onto aluminium.
+# The report's series runs 32-62 km/s, which is far outside the linear
+# Us-Up fit -- run_scenario emits a validity warning saying so.
+defaults:
+  - default
+
+projectile: W
+target: Al
+mass: 0.000000000001
+velocity: 42000.0
+expansion_model: "2T"

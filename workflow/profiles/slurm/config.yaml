@@ -1,0 +1,42 @@
+# Snakemake executor profile for Slurm.
+#
+#   snakemake --profile workflow/profiles/slurm
+#
+# Requires the snakemake-executor-plugin-slurm package (Snakemake >= 8):
+#   pip install snakemake-executor-plugin-slurm
+#
+# For Snakemake 7 use `--cluster "sbatch ..."` instead; the resource names
+# below are the same either way.
+
+executor: slurm
+jobs: 64                      # max concurrent jobs in the queue
+latency-wait: 60              # shared filesystems lag behind job completion
+rerun-incomplete: true
+keep-going: true              # one bad sweep point must not stop the rest
+printshellcmds: true
+
+# Per-rule resources. `runtime` is minutes, `mem_mb` megabytes -- both are
+# Snakemake's standard names, which the Slurm plugin maps to --time and
+# --mem. Setting them per rule is the point of using an orchestrator: the
+# reduced chain needs minutes and 2 GB, a PIConGPU deck needs hours and a GPU.
+default-resources:
+  - slurm_account=""          # set to your charging code, or delete
+  - slurm_partition=""        # set to your CPU partition
+  - runtime=30
+  - mem_mb=2000
+  - cpus_per_task=1
+
+set-resources:
+  validate_config:
+    runtime: 5
+    mem_mb: 1000
+  scenario_point:
+    runtime: 60
+    mem_mb: 4000
+    cpus_per_task: 4
+  aggregate:
+    runtime: 10
+    mem_mb: 2000
+
+set-threads:
+  scenario_point: 4

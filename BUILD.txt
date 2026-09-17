@@ -1,0 +1,33 @@
+hvi_emp package build 2026.09.17-b14
+installer build: 2026.09.17-b14
+
+changes since b3:
+  * mamba-first installs; conda solver-band detection (22.11 / 23.10 / 4.x)
+  * workaround for LAMMPS's upstream import-time version-parse crash
+  * shipped scripts now carry the execute bit (b4 and earlier did not)
+  * doctor no longer suggests spack on machines without it
+  * --submit warns up front when there is no sbatch
+  * MPI: _preload_mpi no longer forces MPICH; LAMMPS probed in a subprocess
+    so MPI_Abort cannot kill doctor; MPI-family mismatch named explicitly
+  * find_m2c prefers a BUILT tree over a source-only one
+  * AtomicData for M2C's Saha solver is GENERATED next to input.st, numeric
+    only (M2C's reader turns a '#' into 1000 zeros silently)
+  * PartitionFunctionEvaluation = OnTheFly; CubicSpline asserts on
+    ground-state-only data
+  * check_grammar scans ALL .h/.cpp and verifies enum VALUES, not just keys
+  * results/ is created with the deck -- M2C does not mkdir it
+  * new scripts/test_m2c.py -- staged M2C verification, now including a
+    tier for the standalone Saha solver (github.com/kevinwgy/saha): the
+    SAME module M2C runs in-loop, packaged for reproducibility. Tests the
+    atomic data in seconds instead of days. Not a dependency.
+
+  COST MODEL CORRECTED against a real run (was wrong in both directions):
+    cell_count assumed a uniform fine mesh    -> 16x HIGH  (5.76M vs 354k)
+    rate assumed 2 us/cell-step               -> 593x LOW  (measured 1187)
+  The two errors partly cancelled and hid each other. The default Fe->Al
+  deck is 9.4 DAYS on 32 cores, not 3.1 hours. Cost is dominated by the
+  non-ideal Saha solver, not the hydro: ionisation off is ~23 min.
+  3-D at 2-D resolution is ~461M cells / 86 GB, not 13.8 billion / 2.6 TB.
+
+check you have this build:
+  bash scripts/install_solvers.sh --version

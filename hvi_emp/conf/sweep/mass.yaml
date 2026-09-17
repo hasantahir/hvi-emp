@@ -1,0 +1,6 @@
+# Charge yield versus projectile mass, logarithmically spaced.
+parameter: mass
+start: 1.0e-15
+stop: 1.0e-9
+num: 13
+log: true

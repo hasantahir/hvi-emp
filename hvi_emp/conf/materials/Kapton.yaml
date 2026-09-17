@@ -1,0 +1,46 @@
+# Kapton HN polyimide -- multi-layer insulation.
+# Sources: DuPont Kapton HN datasheet; Melosh (1989) for the polymer Us-Up fit
+#
+# Units are SI unless the key says otherwise. Energies suffixed
+# _eV are in electron-volts and converted on load.
+
+name: Kapton
+
+# --- shock EOS: linear Us = c0 + s*up, Mie-Grueneisen ---
+rho0: 1420.0            # kg/m^3
+c0: 2200.0               # m/s, bulk sound speed
+s: 1.55                  # -, Us-Up slope
+gamma0: 1.0             # -, Grueneisen at rho0
+us_up_valid_to: 10000   # m/s, beyond this the linear fit is extrapolated
+
+# --- thermophysical ---
+cv_solid: 1090.0         # J/(kg K)
+T_melt: 1073.0            # K
+T_vap: 1200.0             # K, 1 atm boiling point
+L_fusion: 100000         # J/kg
+L_vap: 3.0e+06            # J/kg
+E_cohesive_eV: 4.0     # eV/atom, sublimation energy
+
+# --- atomic ---
+A: 12.0                 # amu, mean atomic mass
+Z: 6                    # -, atomic number
+work_function_eV: 4.36
+
+# Successive ionisation potentials I, II, III ... and the
+# ground-state statistical weights g_0, g_1, ... (one more than E_ion).
+E_ion_eV:
+  - 11.2603
+  - 24.3833
+  - 47.888
+g_ion:
+  - 9.0
+  - 6.0
+  - 1.0
+  - 2.0
+
+# Kapton is a polymer: it depolymerises into molecular fragments rather
+# than vaporising to free atoms, so its cohesive energy per atom (a covalent
+# backbone bond) is legitimately ~10x the vaporisation enthalpy per mean
+# atom. Declaring this relaxes the schema cross-check that catches unit
+# errors in the atomic solids.
+bonding: molecular

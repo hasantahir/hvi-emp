@@ -1,0 +1,3 @@
+# Run here, now, using this machine's cores. No scheduler.
+backend: local
+cpus_per_task: 8

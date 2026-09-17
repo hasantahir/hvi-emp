@@ -1,0 +1,7 @@
+# Charge yield versus impact speed, over the branch where everything
+# vaporises. This is the fit that gives the beta exponent.
+parameter: velocity
+start: 40000.0
+stop: 66000.0
+num: 14
+log: false
