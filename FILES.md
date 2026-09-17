@@ -13,6 +13,8 @@
 | `docs/PHYSICS_AUDIT.md` | — | 509 invariant checks, the 5 physics bugs they caught, the open discrepancy and what closed it |
 | `docs/EMP_UNCERTAINTY.md` | — | the 184× amplitude bracket: one parameter, calibration, and the PIC check |
 | `docs/WORKFLOW.md` | — | materials YAML, pydantic schema, Hydra, Slurm, Snakemake |
+| `docs/DEVELOPMENT.md` | — | the git repo, and moving code to the workstation with `git bundle` |
+| `CHANGELOG.md` | — | the b-series history, reconstructed; `git log` from b14 on |
 | `docs/PERFORMANCE.md` | — | parallelism, CUDA, what scales and what cannot |
 | `docs/INSTALLING_SOLVERS.md` | — | per-solver install: M2C, LAMMPS, WarpX, Idefix, PIConGPU, OpenMHD, ParaView |
 | **Core package** | | |
