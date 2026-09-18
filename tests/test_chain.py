@@ -518,3 +518,78 @@ def test_empty_results_dir_is_not_mistaken_for_output(tmp_path):
     # A real output file flips it to done.
     (results / "solution_0000.vtr").write_text("x\n")
     assert "output present" in chain()
+
+
+# ===========================================================================
+# Composite render: black frames (reported from a real pvbatch run)
+# ===========================================================================
+
+def _composite_script(tmp_path, stages=("md", "reduced")):
+    from hvi_emp.viz.composite import build_chapters, write_composite_script
+
+    pvds = {}
+    for s in stages:
+        (tmp_path / s).mkdir(parents=True, exist_ok=True)
+        p = tmp_path / s / f"{s}.pvd"
+        p.write_text("<VTKFile/>")
+        pvds[s] = str(p)
+    chs = build_chapters(pvds)
+    return write_composite_script(chs, str(tmp_path / "composite.py"))
+
+
+def test_composite_script_is_valid_python(tmp_path):
+    import ast
+    ast.parse(_composite_script(tmp_path))
+
+
+def test_composite_resets_the_camera_and_clipping(tmp_path):
+    """Black frames: the clipping range was never reset.
+
+    The camera was positioned from a nominal zoom in metres with the focal
+    point assumed at the origin, and the near/far planes were left at
+    whatever the previous chapter set. Across nine decades that clips the
+    next chapter away completely -- the scene renders and every pixel is
+    background, which is exactly what came back from pvbatch.
+    """
+    txt = _composite_script(tmp_path)
+    assert "ResetCamera()" in txt
+    assert "ResetCameraClippingRange" in txt
+    # and the reset must come BEFORE any manual camera move in the loop
+    body = txt.split("for idx, (c, r, d, diag) in enumerate(readers):")[1]
+    assert body.index("ResetCamera()") < body.index("CameraPosition")
+
+
+def test_composite_picks_representation_by_data_type(tmp_path):
+    """MD is .vtp PolyData and can never volume-render.
+
+    Every chapter used to be forced to UniformGridRepresentation +
+    Volume, which is an ImageData mode. The LAMMPS chapter therefore drew
+    its labels and none of its atoms.
+    """
+    txt = _composite_script(tmp_path)
+    assert "GetDataClassName" in txt
+    assert "vtkImageData" in txt
+    assert "Point Gaussian" in txt
+    # Volume must be inside the ImageData branch, not unconditional
+    before_branch = txt.split("if kind in")[0]
+    assert 'Representation = "Volume"' not in before_branch
+
+
+def test_point_radius_scales_with_the_data(tmp_path):
+    """A radius fixed in metres is invisible at 5 nm and fills 400 mm."""
+    txt = _composite_script(tmp_path)
+    assert "GaussianRadius" in txt
+    assert "diag" in txt          # derived from the bounds, not a constant
+
+
+def test_handover_card_does_not_sit_on_the_banner(tmp_path):
+    """At 1920x1080 both were drawn in the top strip and overlapped."""
+    txt = _composite_script(tmp_path)
+    assert 'cd.WindowLocation = "Lower Center"' in txt
+    assert 'bd.WindowLocation = "Upper Left Corner"' in txt
+
+
+def test_composite_still_cannot_lose_its_caveat(tmp_path):
+    txt = _composite_script(tmp_path)
+    assert "not one simulation" in txt
+    assert txt.count("NOTICE") >= 2

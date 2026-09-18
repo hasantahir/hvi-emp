@@ -256,14 +256,44 @@ for c in CHAPTERS:
     if field is None:
         print("  %s has no point arrays -- skipped" % c["name"])
         continue
-    d = Show(r, view, "UniformGridRepresentation")
-    d.Representation = "Volume"
+    # Representation by DATA TYPE, not by assumption.
+    #
+    # Every chapter used to be forced to "UniformGridRepresentation" +
+    # "Volume". That is an ImageData mode. The MD chapter is .vtp PolyData
+    # (one point per atom), so it could never volume-render: the labels
+    # drew and the atoms did not. Ask the data what it is.
+    di = r.GetDataInformation()
+    kind = di.GetDataClassName()
+    bounds = di.GetBounds()
+    diag = max(((bounds[1] - bounds[0]) ** 2 +
+                (bounds[3] - bounds[2]) ** 2 +
+                (bounds[5] - bounds[4]) ** 2) ** 0.5, 1e-30)
+
+    if kind in ("vtkImageData", "vtkUniformGrid", "vtkRectilinearGrid"):
+        d = Show(r, view, "UniformGridRepresentation")
+        d.Representation = "Volume"
+        _try("GPU mapper", lambda dd=d: setattr(dd, "VolumeRenderingMode",
+                                                "GPU Based"))
+    else:
+        # Points (atoms, ejecta, tracers). Point Gaussian scales with the
+        # data, so it stays visible whether the box is 5 nm or 400 mm --
+        # a fixed radius in metres is invisible at one end and fills the
+        # screen at the other.
+        d = Show(r, view, "GeometryRepresentation")
+        if not _try("point gaussian",
+                    lambda dd=d: setattr(dd, "Representation",
+                                         "Point Gaussian")):
+            d.Representation = "Surface"
+        _try("gaussian radius",
+             lambda dd=d, g=diag: setattr(dd, "GaussianRadius", g / 250.0))
+        _try("shader preset",
+             lambda dd=d: setattr(dd, "ShaderPreset", "Sphere"))
+
     ColorBy(d, ("POINTS", field))
-    d.RescaleTransferFunctionToDataRangeOverTime()
-    _try("GPU mapper", lambda dd=d: setattr(dd, "VolumeRenderingMode",
-                                            "GPU Based"))
+    _try("rescale", lambda dd=d: dd.RescaleTransferFunctionToDataRangeOverTime())
+    print("  %-10s %-18s bounds diag %.3e m" % (c["name"], kind, diag))
     Hide(r, view)
-    readers.append((c, r, d))
+    readers.append((c, r, d, diag))
 
 # ---------------------------------------------------------------------------
 # The banner. Burnt into every frame, because without it this animation
@@ -287,13 +317,15 @@ card = Text(registrationName="handover")
 cd = Show(card, view, "TextSourceRepresentation")
 cd.FontSize = {font} + 6
 cd.Color = [1.0, 1.0, 1.0]
-cd.WindowLocation = "Upper Center"
+# Lower Center, not Upper Center: at 1920x1080 the handover
+# card overlapped the banner and both became unreadable.
+cd.WindowLocation = "Lower Center"
 card.Text = ""
 
 
 def show_only(idx):
     """Only chapter `idx` is visible."""
-    for j, (c, r, d) in enumerate(readers):
+    for j, (c, r, d, _diag) in enumerate(readers):
         if j == idx:
             Show(r, view)
         else:
@@ -311,17 +343,31 @@ def frame_out(n):
 # Walk the chapters: hold, then hand over
 # ---------------------------------------------------------------------------
 n = 0
-for idx, (c, r, d) in enumerate(readers):
+for idx, (c, r, d, diag) in enumerate(readers):
     show_only(idx)
     card.Text = ""
     times = r.TimestepValues or [0.0]
     scene = GetAnimationScene()
     scene.UpdateAnimationUsingDataTimeSteps()
 
-    half = c["zoom"]
-    view.CameraFocalPoint = [0.0, 0.0, 0.0]
-    view.CameraPosition = [2.2 * half, -1.6 * half, 1.2 * half]
+    # ResetCamera FIRST, then adjust. This is the fix for black frames.
+    #
+    # The camera used to be positioned from the chapter's nominal zoom in
+    # metres, with the focal point assumed to be the origin, and the near
+    # and far clipping planes never touched. Across nine decades of scale
+    # the stale clipping range from the previous chapter cuts the next one
+    # away entirely -- the scene renders, and every pixel is background.
+    #
+    # ResetCamera() frames whatever is actually visible and recomputes the
+    # clipping range to match, so it is correct regardless of the data's
+    # units or whether it is centred on the origin. The nominal zoom is
+    # then only a stylistic pull-back, and cannot make the data vanish.
+    ResetCamera()
     view.CameraViewUp = [0.0, 0.0, 1.0]
+    _try("pull back", lambda: view.SetPropertyWithName(
+        "CameraPosition",
+        [p * 1.25 for p in view.CameraPosition]))
+    _try("clip range", lambda: view.ResetCameraClippingRange())
 
     for k in range(HOLD):
         t = times[min(int(k * len(times) / max(HOLD, 1)), len(times) - 1)]
