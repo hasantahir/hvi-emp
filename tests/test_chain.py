@@ -717,3 +717,35 @@ def test_repair_is_idempotent_and_skips_existing(tmp_path):
         sys.argv = argv
 
     assert (d / "plume.pvd").stat().st_mtime_ns == stamp
+
+
+def test_out_default_is_repo_relative_not_cwd_relative(tmp_path):
+    """Running from two directories must not give two run directories.
+
+    Reported: the same command from the repo root and from scripts/ pointed
+    at different `full_chain` directories. The second looked like a chain
+    that had never run -- "0/5 chapters have data" -- while a complete set
+    of frames sat in the first. Nothing was lost and nothing errored, which
+    is what made it hard to see.
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    script = root / "scripts" / "run_full_chain.py"
+    env = dict(os.environ, PYTHONPATH=str(root))
+
+    seen = set()
+    for cwd in (tmp_path / "a", tmp_path / "b"):
+        cwd.mkdir()
+        r = subprocess.run([sys.executable, str(script)], cwd=str(cwd),
+                           capture_output=True, text=True, env=env,
+                           timeout=300)
+        assert r.returncode == 0, r.stderr
+        line = next(ln for ln in r.stdout.splitlines()
+                    if "run directory:" in ln)
+        seen.add(line.split("run directory:")[1].strip())
+
+    assert len(seen) == 1, f"CWD changed the run directory: {seen}"
+    assert str(root) in seen.pop()

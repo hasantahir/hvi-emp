@@ -41,7 +41,8 @@ import sys
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+_REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(_REPO))
 
 from hvi_emp import run_scenario
 from hvi_emp.chain import (STAGE_INFO, STAGE_ORDER, Manifest, StageResult,
@@ -332,7 +333,17 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--out", default="full_chain")
+    # Relative to the REPOSITORY, not the current directory.
+    #
+    # The default used to be the bare string "full_chain", resolved against
+    # CWD. Running from the repo root and from scripts/ therefore produced
+    # two different run directories, and the second one looked like a chain
+    # that had never run -- "0/5 chapters have data" -- while a complete
+    # set of frames sat in the first. Nothing was lost and nothing was
+    # wrong, which is exactly what made it hard to see.
+    ap.add_argument("--out", default=str(_REPO / "full_chain"),
+                    help="run directory (default: <repo>/full_chain, "
+                         "independent of where you invoke this from)")
     ap.add_argument("--projectile", default="Fe")
     ap.add_argument("--target", default="Al")
     ap.add_argument("--mass", type=float, default=1e-12)
@@ -404,6 +415,20 @@ def main(argv=None) -> int:
     print(f"{args.projectile} {args.mass:.2e} kg at {args.velocity/1e3:.0f} "
           f"km/s -> {args.target}   ({args.angle:.0f} deg)")
     print(f"run directory: {run_dir}")
+    if not os.path.isdir(run_dir) or not os.listdir(run_dir):
+        # Distinguish "nothing has run" from "you are looking in the wrong
+        # place", which read identically before.
+        siblings = []
+        for base in {os.getcwd(), str(_REPO), os.path.dirname(run_dir)}:
+            cand = os.path.join(base, "full_chain")
+            if (os.path.abspath(cand) != run_dir and os.path.isdir(cand)
+                    and os.listdir(cand)):
+                siblings.append(os.path.abspath(cand))
+        if siblings:
+            print(f"  this directory is EMPTY, but these have data:")
+            for s_ in sorted(set(siblings)):
+                print(f"      {s_}")
+            print(f"  pass --out to use one of them")
     if not (args.run or args.submit or args.render):
         print("\nDRY: nothing will run. Add --run, --submit or --render.")
 
