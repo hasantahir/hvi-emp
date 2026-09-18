@@ -48,6 +48,7 @@
 | `hvi_emp/doctor.py` | 480 | environment check: hardware, GPU/driver diagnosis, solvers, live self-test |
 | `hvi_emp/viz/vti.py` | 560 | VTK ImageData writer + impact/plume/smoke volume sampler; `SCENES` (impact vs plume: one domain cannot show both) |
 | `hvi_emp/chain.py` | 250 | the full-waterfall DAG: stage definitions, manifest, resume, Slurm submission |
+| `hvi_emp/viz/emp_field.py` | 230 | the EM far field, reconstructed exactly from the dipole model: wavefront `.vti` series + pulse/spectrum figure |
 | `hvi_emp/viz/composite.py` | 330 | the continuous-zoom composite across all solvers, with the "not one simulation" caveat burnt into every frame |
 | `hvi_emp/viz/paraview_scene.py` | 400 | generates a `paraview.simple` script that builds the view and saves a `.pvsm`; pins the GPU volume mapper; NVIDIA IndeX; headless `pvbatch` animation; M2C array aliases |
 | **Production-solver bridges** (`hvi_emp/solvers/`) | | |
@@ -90,6 +91,7 @@
 | `tests/test_workflow.py` | 470 | 53 tests: schema rejections, config composition, sbatch content, CLI exit codes |
 | `tests/test_performance.py` | 300 | 23 tests: parallel==serial, fast lookup==reference, GPU==CPU |
 | `scripts/run_full_chain.py` | 330 | **the one file to run**: whole waterfall, Slurm submit, resume, composite render |
+| `scripts/render_stages.py` | 170 | one animation per stage instead of the composite; `--emp` adds the radiated field |
 | `scripts/pipeline.sh` | 150 | run + render end to end; `--render-only` reuses solver data |
 | `scripts/repair_pvd.py` | 190 | rebuild a lost `.pvd` index from frames already on disk; times recomputed bit-exactly, frames untouched |
 | `scripts/check_render_data.py` | 190 | is the black frame a scene bug or empty data? answers in a second, no ParaView |
