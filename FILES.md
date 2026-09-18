@@ -90,6 +90,8 @@
 | `tests/test_workflow.py` | 470 | 53 tests: schema rejections, config composition, sbatch content, CLI exit codes |
 | `tests/test_performance.py` | 300 | 23 tests: parallel==serial, fast lookup==reference, GPU==CPU |
 | `scripts/run_full_chain.py` | 330 | **the one file to run**: whole waterfall, Slurm submit, resume, composite render |
+| `scripts/pipeline.sh` | 150 | run + render end to end; `--render-only` reuses solver data |
+| `scripts/check_render_data.py` | 190 | is the black frame a scene bug or empty data? answers in a second, no ParaView |
 | `scripts/test_m2c.py` | 300 | staged M2C test ladder: grammar, shipped test, smoke, physics-vs-reduced |
 | `scripts/benchmark.py` | 165 | measures table build, lookup, sweep scaling, volume sampling, CUDA |
 | `scripts/physics_audit.py` | 330 | conservation/thermodynamic invariants across parameter space; exits non-zero on failure |
