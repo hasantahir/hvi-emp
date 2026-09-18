@@ -15,6 +15,44 @@ diffs, which no longer exist. From b14 onwards, use `git log`.
 
 ## Unreleased
 
+### Composite render: black frames
+
+Reported from a real `pvbatch` run — text overlays drew, geometry did not.
+Two independent causes, found in that order:
+
+- **The `.pvd` index was missing.** 111 frames on disk, no collection. The
+  composite reads `.pvd`, so every chapter was skipped before the camera
+  mattered. `scripts/repair_pvd.py` rebuilds the index from frames already
+  present; times are recomputed through the writer's own call and verified
+  bit-exact against an original. The frames are never rewritten.
+- **The scene itself.** `ResetCamera()` now runs before any camera move, so
+  a stale clipping range cannot cut a chapter away across nine decades of
+  scale; representation is chosen from `GetDataClassName()` rather than
+  forcing `Volume` on `.vtp` point data; the handover card no longer sits on
+  the banner.
+
+Caught while building the repair, and worth recording: the first version
+ignored the impact scene's `t_end` clamp and produced 1e-5 s where the
+writer used 9.22e-9 s. Frames would have rendered with a silently wrong
+time axis — the exact failure the tool exists to prevent.
+
+### Tooling
+
+- `scripts/pipeline.sh` — run and render end to end, from Hasan's workflow
+  script. `--render-only` reuses solver data (verified: no stage re-runs,
+  zero `.vti` rewritten). Offers the `.pvd` repair automatically rather than
+  telling you to re-run a solver.
+- `scripts/check_render_data.py` — distinguishes "the scene is wrong" from
+  "the data is empty" in under a second, without ParaView.
+- `scripts/test_m2c.py` — staged M2C verification.
+- `.github/workflows/tests.yml` — CI on 3.10 and 3.12, no optional solvers.
+
+### Fixed
+
+- `requirements.txt` omitted PyYAML, needed at import time.
+- Six tests failed rather than skipped without LAMMPS.
+
+
 ## 2026.09.17-b14 — first commit
 
 Snapshot of the tree as shipped in `hvi_emp_2026-09-17_b14.zip`
