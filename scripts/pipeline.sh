@@ -60,6 +60,7 @@ done
 
 CHAIN="$REPO/scripts/run_full_chain.py"
 CHECK="$REPO/scripts/check_render_data.py"
+REPAIR="$REPO/scripts/repair_pvd.py"
 COMPOSITE="$OUT/composite.py"
 PATTERN="$FRAMES/composite.%04d.png"
 
@@ -83,9 +84,25 @@ fi
 step "Is there anything to render?"
 if [[ -f "$CHECK" ]]; then
     if ! run python "$CHECK" "$OUT"; then
-        bad "the data is unusable -- re-rendering cannot fix this"
-        say "  Fix the stage that produced it, then run again."
-        exit 1
+        # A missing index is recoverable without re-running anything: the
+        # frames are the expensive part, the .pvd is a few hundred bytes of
+        # XML. Offer the repair before telling anyone to re-run a solver.
+        if [[ -f "$REPAIR" ]] && find "$OUT" \( -name '*.vti' -o -name '*.vtp' \) \
+             -print -quit 2>/dev/null | grep -q .; then
+            warn "frames exist but the index does not -- that is repairable"
+            say "  Rebuilding the .pvd from the frames already on disk:"
+            if run python "$REPAIR" "$OUT" && run python "$CHECK" "$OUT"; then
+                ok "index rebuilt; the frames were not touched"
+            else
+                bad "repair did not recover it"
+                say "  Re-run the stage that produced this data."
+                exit 1
+            fi
+        else
+            bad "the data is unusable -- re-rendering cannot fix this"
+            say "  Fix the stage that produced it, then run again."
+            exit 1
+        fi
     fi
 else
     warn "check_render_data.py not found; skipping the pre-flight"

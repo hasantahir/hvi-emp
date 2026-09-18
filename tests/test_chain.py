@@ -593,3 +593,127 @@ def test_composite_still_cannot_lose_its_caveat(tmp_path):
     txt = _composite_script(tmp_path)
     assert "not one simulation" in txt
     assert txt.count("NOTICE") >= 2
+
+
+# ===========================================================================
+# Rebuilding a lost .pvd index (reported: 111 frames, no collection)
+# ===========================================================================
+
+def _scene_dir(tmp_path, scene="impact", frames=4):
+    """A real written scene, so the comparison is against real output."""
+    from hvi_emp import run_scenario
+    from hvi_emp.viz.vti import write_scene
+
+    # t_end=1e-5 matches what run_full_chain's stage_reduced uses. The
+    # repair recomputes times from the scenario, so a different scenario
+    # gives different times -- which is the documented behaviour, and an
+    # earlier version of this test got it wrong rather than the tool.
+    sc = run_scenario("Fe", "Al", mass=1e-12, velocity=50e3, t_end=1e-5)
+    d = tmp_path / "reduced" / scene
+    write_scene(sc, str(d), scene=scene, n_frames=frames,
+                quality="draft", verbose=False)
+    return d
+
+
+def _pvd_entries(pvd):
+    import xml.etree.ElementTree as ET
+    root = ET.parse(pvd).getroot()
+    return [(float(ds.get("timestep")), ds.get("file"))
+            for ds in root.findall(".//DataSet")]
+
+
+def test_repair_reproduces_the_original_times_exactly(tmp_path):
+    """The rebuilt index must match the one the writer produced.
+
+    A .pvd is the cheap part; the frames are the expensive part. When a
+    stage dies between the two, re-running the solver to recover a few
+    hundred bytes of XML is the wrong trade -- but only if the rebuilt
+    times are right.
+    """
+    import runpy
+    import sys
+
+    d = _scene_dir(tmp_path, "impact", frames=4)
+    pvd = d / "impact.pvd"
+    original = _pvd_entries(pvd)
+    pvd.unlink()                                  # the reported state
+
+    root = Path(__file__).resolve().parents[1]
+    argv = sys.argv[:]
+    sys.argv = ["repair_pvd.py", str(tmp_path)]
+    try:
+        runpy.run_path(str(root / "scripts" / "repair_pvd.py"),
+                       run_name="__main__")
+    except SystemExit as exc:
+        assert exc.code == 0, exc.code
+    finally:
+        sys.argv = argv
+
+    assert pvd.is_file(), "repair did not write the index"
+    rebuilt = _pvd_entries(pvd)
+    assert len(rebuilt) == len(original)
+    for (t0, f0), (t1, f1) in zip(original, rebuilt):
+        assert f0 == f1
+        assert t1 == pytest.approx(t0, rel=1e-12, abs=1e-30)
+
+
+def test_impact_scene_end_time_is_clamped_in_the_repair():
+    """The impact scene clamps t_end; skipping it is a 1000x error.
+
+    The first version of the repair returned 1e-5 s where the writer used
+    9.22e-9 s. Frames would have rendered with a silently wrong time axis
+    -- the plausible-looking nonsense the tool exists to refuse.
+    """
+    from pathlib import Path as _P
+    src = (_P(__file__).resolve().parents[1]
+           / "scripts" / "repair_pvd.py").read_text()
+    assert "plume_departure_time" in src
+    assert "shock_transit_time" in src
+    assert 'if scene == "impact"' in src
+
+
+def test_repair_does_not_rewrite_the_frames(tmp_path):
+    """Only the index is written. The frames are the expensive part."""
+    import runpy
+    import sys
+
+    d = _scene_dir(tmp_path, "plume", frames=3)
+    (d / "plume.pvd").unlink()
+    frames = sorted(d.glob("*.vti"))
+    before = {f.name: (f.stat().st_mtime_ns, f.stat().st_size) for f in frames}
+
+    root = Path(__file__).resolve().parents[1]
+    argv = sys.argv[:]
+    sys.argv = ["repair_pvd.py", str(tmp_path)]
+    try:
+        runpy.run_path(str(root / "scripts" / "repair_pvd.py"),
+                       run_name="__main__")
+    except SystemExit:
+        pass
+    finally:
+        sys.argv = argv
+
+    after = {f.name: (f.stat().st_mtime_ns, f.stat().st_size)
+             for f in sorted(d.glob("*.vti"))}
+    assert before == after, "repair must not touch the frame data"
+
+
+def test_repair_is_idempotent_and_skips_existing(tmp_path):
+    import runpy
+    import sys
+
+    d = _scene_dir(tmp_path, "plume", frames=3)
+    stamp = (d / "plume.pvd").stat().st_mtime_ns
+
+    root = Path(__file__).resolve().parents[1]
+    argv = sys.argv[:]
+    sys.argv = ["repair_pvd.py", str(tmp_path)]
+    try:
+        runpy.run_path(str(root / "scripts" / "repair_pvd.py"),
+                       run_name="__main__")
+    except SystemExit:
+        pass
+    finally:
+        sys.argv = argv
+
+    assert (d / "plume.pvd").stat().st_mtime_ns == stamp
