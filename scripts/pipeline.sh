@@ -28,6 +28,7 @@ FRAMES="${HVI_FRAMES:-$OUT/frames}"
 FPS="${HVI_FPS:-12}"
 RENDER_ONLY=0
 DRY=0
+QUICKLOOK=0
 EXTRA=()
 
 RED=$'\033[31m'; GRN=$'\033[32m'; YLW=$'\033[33m'; BLD=$'\033[1m'; RST=$'\033[0m'
@@ -49,6 +50,7 @@ usage() { sed -n '2,/^set -euo/p' "$0" | sed 's/^# \{0,1\}//;$d'; }
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --render-only) RENDER_ONLY=1 ;;
+        --quicklook)   QUICKLOOK=1 ;;
         --dry-run|-n)  DRY=1 ;;
         --out)         shift; OUT="$1"; FRAMES="$OUT/frames" ;;
         --fps)         shift; FPS="$1" ;;
@@ -120,12 +122,27 @@ if [[ $DRY -eq 0 && ! -f "$COMPOSITE" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+step "Quicklook (no ParaView)"
+# Cheap, and it settles the question pvbatch cannot answer: is the picture
+# black because the scene is wrong, or because the colour field is empty?
+# This reads the arrays directly, so whatever it draws is what is in the
+# file. Run it before pvbatch, not after, so there is always something to
+# look at.
+QL="$REPO/scripts/quicklook.py"
+if [[ -f "$QL" ]] && { [[ $QUICKLOOK -eq 1 ]] || ! have pvbatch; }; then
+    run python "$QL" --run-dir "$OUT" || warn "quicklook reported problems"
+else
+    say "  skipped (pass --quicklook to draw ParaView-free previews)"
+fi
+
+# ---------------------------------------------------------------------------
 step "Render (pvbatch)"
 if ! have pvbatch; then
     bad "pvbatch not on PATH"
     say "  micromamba install -p \$CONDA_PREFIX -c conda-forge paraview"
     say "  The scene is written; run it later with:"
     say "      pvbatch --force-offscreen-rendering $COMPOSITE"
+    say "  Quicklook above already drew previews without it."
     exit 1
 fi
 run pvbatch --force-offscreen-rendering "$COMPOSITE"
@@ -141,7 +158,11 @@ if [[ $DRY -eq 0 ]]; then
     # A frame that is entirely one colour is the black-frame failure. Worth
     # saying so here rather than after you have watched the movie.
     if have python; then
-        python - "$FRAMES" <<'PY' || true
+        # Exit 3 from the probe means "blank". Capture it rather than `|| true`,
+        # which would discard the very signal being tested for, while still
+        # not tripping `set -e`.
+        blank_rc=0
+        python - "$FRAMES" <<'PY' || blank_rc=$?
 import glob, os, sys
 d = sys.argv[1]
 fs = sorted(glob.glob(os.path.join(d, "composite.*.png")))
@@ -151,9 +172,16 @@ if fs:
     # A 1920x1080 PNG of a single flat colour compresses to a few kB.
     if sz < 20000:
         print("  \033[33m[warn]\033[0m %s is only %d bytes -- that is what a "
-              "blank\n         frame looks like. Check the scene before "
-              "assembling." % (os.path.basename(mid), sz))
+              "blank\n         frame looks like." % (os.path.basename(mid), sz))
+        sys.exit(3)
 PY
+        if [[ $blank_rc -eq 3 ]]; then
+            warn "falling back to quicklook to find out WHY it is blank"
+            say "  If quicklook shows structure, the scene is wrong."
+            say "  If quicklook is empty too, the colour field has no signal"
+            say "  in those frames and no camera change will help."
+            [[ -f "$QL" ]] && run python "$QL" --run-dir "$OUT" || true
+        fi
     fi
 fi
 

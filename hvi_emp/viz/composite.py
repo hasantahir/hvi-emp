@@ -154,10 +154,20 @@ def write_composite_script(chapters, out_path: str,
 
     ch_lines = []
     for i, c in enumerate(available):
+        # Measure the opacity ramp per chapter. The chapters differ by nine
+        # orders of magnitude in cell size, so one ramp and one
+        # ScalarOpacityUnitDistance cannot serve them all -- which is
+        # precisely how the composite came out black.
+        try:
+            from .vtkread import opacity_plan
+            plan = opacity_plan(c.pvd, prefer=(c.colour_by,))
+        except Exception:                                   # noqa: BLE001
+            plan = None
         ch_lines.append(
             f"    dict(name={c.stage!r}, code={c.code!r}, "
             f"pvd={os.path.abspath(c.pvd)!r}, zoom={c.zoom!r}, "
-            f"colour_by={c.colour_by!r}, banner={c.banner()!r})")
+            f"colour_by={c.colour_by!r}, banner={c.banner()!r}, "
+            f"plan={plan!r})")
     chapters_py = "[\n" + ",\n".join(ch_lines) + "\n]" if ch_lines else "[]"
 
     handovers = []
@@ -291,6 +301,46 @@ for c in CHAPTERS:
 
     ColorBy(d, ("POINTS", field))
     _try("rescale", lambda dd=d: dd.RescaleTransferFunctionToDataRangeOverTime())
+
+    # The measured opacity ramp for THIS chapter.
+    #
+    # A composite spans nine decades of cell size, so a single ramp and a
+    # single ScalarOpacityUnitDistance cannot serve every chapter -- and a
+    # ramp whose knees are fractions of [min, max] serves none of them,
+    # because these fields are floor-dominated: in the plume volume the log
+    # density sits at -12 over 99% of voxels, which put the entire signal
+    # below the first knee at opacity 0.0000. That, not the camera, is why
+    # the frames were black. `hvi_emp.viz.vtkread.opacity_plan` measures
+    # each chapter's percentiles and cell size when this script is written.
+    plan = c.get("plan")
+    if plan and field == plan.get("field"):
+        lut = GetColorTransferFunction(field)
+        pwf = GetOpacityTransferFunction(field)
+        _try("colour range", lambda: lut.RescaleTransferFunction(plan["lo"],
+                                                                 plan["hi"]))
+        _try("opacity range", lambda: pwf.RescaleTransferFunction(plan["lo"],
+                                                                  plan["hi"]))
+        _try("opacity ramp", lambda: setattr(pwf, "Points", plan["points"]))
+        _try("unit distance",
+             lambda dd=d: setattr(dd, "ScalarOpacityUnitDistance",
+                                  plan["unit_distance"]))
+        print("  %-10s opacity MEASURED  map %.4g..%.4g  unit %.3e m  "
+              "signal %.3f%% of voxels"
+              % (c["name"], plan["lo"], plan["hi"], plan["unit_distance"],
+                 plan["signal_fraction"] * 100.0))
+        if plan.get("constant_frames"):
+            print("  %-10s %d of %d sampled frames are CONSTANT -- those are "
+                  "black because they are empty"
+                  % (c["name"], plan["constant_frames"],
+                     plan["frames_sampled"]))
+    elif kind in ("vtkImageData", "vtkUniformGrid", "vtkRectilinearGrid"):
+        # No plan: at least make the unit distance follow the data instead of
+        # a constant, which is the failure that cannot be seen in the log.
+        _try("unit distance",
+             lambda dd=d, g=diag: setattr(dd, "ScalarOpacityUnitDistance",
+                                          g / 100.0))
+        print("  %-10s opacity ESTIMATED (frames unreadable at write time)"
+              % c["name"])
     print("  %-10s %-18s bounds diag %.3e m" % (c["name"], kind, diag))
     Hide(r, view)
     readers.append((c, r, d, diag))

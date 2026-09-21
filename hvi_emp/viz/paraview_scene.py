@@ -318,20 +318,29 @@ lut.ApplyPreset({style_preset!r}, True)
 {log_line}
 rng = lut.RGBPoints[0], lut.RGBPoints[-4]
 lo, hi = float(rng[0]), float(rng[1])
-print("colour range %.4g .. %.4g" % (lo, hi))
+print("data range %.4g .. %.4g" % (lo, hi))
 
-# Opacity: transparent at the bottom of the range, opaque at the top. A flat
-# opacity ramp renders the Gaussian tail as fog and hides the core, which is
-# the other half of the "featureless blob" problem.
-span = hi - lo if hi > lo else 1.0
-pwf.Points = [
-    lo,               0.0,  0.5, 0.0,
-    lo + 0.45 * span, 0.02, 0.5, 0.0,
-    lo + 0.75 * span, 0.25, 0.5, 0.0,
-    hi,               0.85, 0.5, 0.0,
-]
+# ---------------------------------------------------------------------------
+# Opacity. Measured from the data when the scene was written, NOT assumed.
+#
+# Two hardcoded numbers used to live here and they produced black frames in
+# every scene, while ParaView did exactly as it was told:
+#
+#   * the ramp's knees were fractions of [min, max]. In a plume volume the
+#     log density sits at its -12 floor over 99% of the voxels, so [min,max]
+#     is almost entirely vacuum and the whole signal fell below the first
+#     knee -- measured opacity of the median signal voxel: 0.0000.
+#   * ScalarOpacityUnitDistance was 1.0e-5 m for every scene. VTK accumulates
+#     opacity as 1-(1-a)**(sample/unit), so this is not a brightness knob: at
+#     the plume's 9.7e-3 m cells it was 965x too small, and at the impact
+#     scene's 6.8e-6 m cells the exponent falls to 0.06 and the volume
+#     vanishes.
+#
+# Both are now computed from the frames themselves by
+# hvi_emp.viz.vtkread.opacity_plan, and baked in below.
+# ---------------------------------------------------------------------------
+{opacity_block}
 disp.ScalarOpacityFunction = pwf
-disp.ScalarOpacityUnitDistance = 1.0e-5
 disp.SetScalarBarVisibility(view, 1)
 
 bar = GetScalarBar(lut, view)
@@ -412,6 +421,7 @@ print("done. Press play, or step the timeline.")
         legend_len=p["legend_len"],
         caption=title,
         renderer_block=_renderer_block(renderer),
+        opacity_block=_opacity_block(pvd_path, array),
         clip_block=_CLIP_BLOCK if clip else
         "# clip=False: showing the exterior surface\n",
         target_block=_target_block() if show_target else
@@ -427,6 +437,65 @@ print("done. Press play, or step the timeline.")
         fh.write(text)
     os.chmod(out_path, 0o755)
     return text
+
+
+#: Used when the frames cannot be read at scene-writing time. It is the old
+#: fixed ramp, with the knee moved down to 0.05 of the range and the unit
+#: distance derived from the data bounds at render time rather than fixed at
+#: 1e-5 m. Worse than a measured plan, but it cannot be off by 1000x.
+_OPACITY_FALLBACK = '''span = hi - lo if hi > lo else 1.0
+print("opacity ramp: ESTIMATED (frames were not readable when this scene "
+      "was written, so the knees are guesses, not percentiles)")
+pwf.Points = [
+    lo,               0.0,  0.5, 0.0,
+    lo + 0.05 * span, 0.06, 0.5, 0.0,
+    lo + 0.40 * span, 0.35, 0.5, 0.0,
+    hi,               0.90, 0.5, 0.0,
+]
+_b = src.GetDataInformation().GetBounds()
+_diag = max(((_b[1]-_b[0])**2 + (_b[3]-_b[2])**2 + (_b[5]-_b[4])**2)**0.5,
+            1e-30)
+# One cell, roughly: the diagonal over the cells along it. Never a constant.
+disp.ScalarOpacityUnitDistance = _diag / 100.0
+print("  unit distance %.3e m (from bounds)" % disp.ScalarOpacityUnitDistance)
+'''
+
+
+def _opacity_block(pvd_path: str, array: str) -> str:
+    """Opacity control points measured from the frames, or a safe fallback.
+
+    Reading the data here rather than at render time is deliberate: ParaView
+    can give a range but not a percentile, and it is the percentile that
+    matters when 99% of a volume is vacuum floor.
+    """
+    plan = None
+    try:
+        from .vtkread import opacity_plan
+        plan = opacity_plan(pvd_path, field=array)
+    except Exception:                                       # noqa: BLE001
+        plan = None
+    if not plan:
+        return _OPACITY_FALLBACK
+
+    pts = ", ".join(f"{v!r}" for v in plan["points"])
+    warn = ""
+    if plan["constant_frames"]:
+        warn = (f'print("  WARNING: {plan["constant_frames"]} of '
+                f'{plan["frames_sampled"]} sampled frames are CONSTANT in '
+                f'this field -- those frames are black because they are "\n'
+                f'      "empty, not because the scene is wrong")\n')
+    return (
+        f'# Measured from {plan["frames_sampled"]} frame(s) of this series.\n'
+        f'# Signal occupies {plan["signal_fraction"] * 100:.3f}% of voxels; '
+        f'the floor is {plan["floor"]:.4g} and the map starts at the signal\n'
+        f'# median, so the colour map is spent on structure, not vacuum.\n'
+        f'lut.RescaleTransferFunction({plan["lo"]!r}, {plan["hi"]!r})\n'
+        f'pwf.RescaleTransferFunction({plan["lo"]!r}, {plan["hi"]!r})\n'
+        f'pwf.Points = [{pts}]\n'
+        f'disp.ScalarOpacityUnitDistance = {plan["unit_distance"]!r}\n'
+        f'print("opacity ramp: MEASURED, map %.4g .. %.4g, unit distance '
+        f'%.3e m" % ({plan["lo"]!r}, {plan["hi"]!r}, '
+        f'{plan["unit_distance"]!r}))\n' + warn)
 
 
 def _renderer_block(renderer: str) -> str:
