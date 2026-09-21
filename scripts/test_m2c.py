@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -97,12 +98,12 @@ def tier0_grammar(source_root: str) -> bool:
     if not os.path.isdir(source_root):
         warn(f"no M2C source at {source_root}; skipping "
              f"(pass --source /path/to/m2c)")
-        return True
+        return None
     try:
         res = check_grammar(source_root)
     except FileNotFoundError as exc:
         warn(f"{exc}")
-        return True
+        return None
 
     n_kw = len(res["found"]) + len(res["missing"])
     if res["missing"]:
@@ -127,7 +128,7 @@ def tier0_grammar(source_root: str) -> bool:
 # Tier 0.5 -- the standalone Saha solver
 # ---------------------------------------------------------------------------
 
-def tier05_saha(saha_root: str) -> bool:
+def tier05_saha(saha_root: str):
     """Exercise the ionisation module alone, without the flow solver.
 
     Zhao et al. (2026) §5.7: "For ease of reproducibility, the ionization
@@ -157,7 +158,7 @@ def tier05_saha(saha_root: str) -> bool:
               f"{root}")
         print("      Worth having: it tests the atomic data in seconds")
         print("      rather than days. Not required by M2C.")
-        return True
+        return None      # skipped, not passed
 
     exe = None
     for cand in ("saha", "build/saha"):
@@ -169,22 +170,22 @@ def tier05_saha(saha_root: str) -> bool:
         warn(f"saha checkout present but not built ({root})")
         print("      cd {0} && mkdir -p build && cd build && cmake .. && "
               "make -j".format(root))
-        return True
+        return None
 
     ref = root / "Tests" / "Test1_HeNeAr"
     if not ref.is_dir():
         warn("Tests/Test1_HeNeAr not found; skipping the published check")
-        return True
+        return None
     deck = next(iter(sorted(ref.glob("*.st"))), None)
     if deck is None:
         warn("no input deck in Tests/Test1_HeNeAr")
-        return True
+        return None
     ok(f"found {exe}")
     print(f"  reference case: {deck.relative_to(root)}")
     print(f"  (He 0.3 : Ne 0.1 : Ar 0.6 at 5 eV; reference Zaghloul, "
           f"paper Fig. 11)")
     return _run_deck(deck.parent, deck.name, str(exe), 1, 5.0,
-                     label="He/Ne/Ar verification")
+                     label="He/Ne/Ar verification", launcher="mpirun")
 
 
 # ---------------------------------------------------------------------------
@@ -192,32 +193,121 @@ def tier05_saha(saha_root: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def tier1_shipped(source_root: str, exe: str, cores: int,
-                  minutes: float) -> bool:
+                  minutes: float, launcher: str = "mpirun"):
     head("Tier 1: M2C's own shipped test case (validates the BUILD)")
     tests = Path(source_root) / "Tests"
     if not tests.is_dir():
         warn(f"no Tests/ under {source_root}; skipping")
-        return True
+        return None
     decks = sorted(tests.rglob("input.st"))
     hvi = [d for d in decks if "HVI" in str(d) or "Impact" in str(d)]
     deck = (hvi or decks or [None])[0]
     if deck is None:
         warn("no input.st under Tests/; skipping")
-        return True
+        return None
 
     print(f"  deck: {deck}")
     print(f"  This is M2C's code and M2C's input -- nothing of ours is")
     print(f"  involved, so a failure here is a build problem.")
     return _run_deck(deck.parent, deck.name, exe, cores, minutes,
-                     label="shipped test")
+                     label="shipped test", launcher=launcher)
 
 
 # ---------------------------------------------------------------------------
 # Tier 2 -- our deck, tiny
 # ---------------------------------------------------------------------------
 
-def _run_deck(workdir, deck_name, exe, cores, minutes, label) -> bool:
-    cmd = ["mpirun", "-np", str(cores), exe, deck_name]
+#: Launchers worth trying, most specific first. `srun` last: on a cluster it
+#: works only inside an allocation, so finding it on PATH does not mean a
+#: bare `srun` will run here.
+_LAUNCHERS = ("mpirun", "mpiexec", "orterun", "srun")
+
+#: Sonames, so the launcher can be matched to the family the binary needs.
+#: `libmpi.so.12` is MPICH, `libmpi.so.40` is Open MPI. Launching one with
+#: the other's mpirun gives "Invalid communicator" -- already hit once in
+#: this project, and it is not obvious from the error that MPI is at fault.
+_MPI_SONAME = re.compile(r"libmpi(?:_[a-z0-9]+)?\.so\.\d+")
+
+
+def linked_mpi(exe: str) -> tuple:
+    """(soname, resolved path) for the MPI the binary is actually linked to.
+
+    The binary is the authority here. M2C was built against one MPI, and
+    that MPI's launcher is the only one that can start it -- which is worth
+    finding out from the ELF rather than from whatever happens to be on
+    PATH today.
+    """
+    try:
+        r = subprocess.run(["ldd", exe], capture_output=True, text=True,
+                           timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None, None
+    for line in (r.stdout or "").splitlines():
+        m = _MPI_SONAME.search(line)
+        if not m:
+            continue
+        parts = line.split("=>")
+        path = parts[1].strip().split(" (")[0] if len(parts) > 1 else ""
+        return m.group(0), (path or None)
+    return None, None
+
+
+def find_launcher(exe: str) -> tuple:
+    """(launcher path or None, list of advice lines).
+
+    Looks on PATH first, then beside the MPI the binary is linked against.
+    An MPI installed under a prefix keeps `mpirun` in `<prefix>/bin` and
+    `libmpi.so` in `<prefix>/lib`, so the library path names the launcher
+    even when nothing is on PATH -- which is the usual state of a login
+    shell that has not activated the environment M2C was built in.
+    """
+    soname, libpath = linked_mpi(exe)
+    advice = []
+    if soname:
+        family = ("Open MPI" if soname.endswith((".40", ".20", ".12"))
+                  and "libmpi.so.40" in soname else
+                  "MPICH" if soname == "libmpi.so.12" else "unknown family")
+        advice.append(f"the binary needs {soname} ({family})")
+
+    for name in _LAUNCHERS:
+        p = shutil.which(name)
+        if p:
+            return p, advice + [f"found {name} on PATH: {p}"]
+
+    # Not on PATH. Derive it from the library the binary resolved to.
+    if libpath:
+        prefix = Path(libpath).resolve().parent
+        for up in (prefix.parent, prefix.parent.parent):
+            for name in _LAUNCHERS[:3]:
+                cand = up / "bin" / name
+                if cand.is_file() and os.access(cand, os.X_OK):
+                    advice.append(
+                        f"not on PATH, but the MPI this binary is linked "
+                        f"against has one:")
+                    advice.append(f"    {cand}")
+                    advice.append(f"  add it for this shell with:")
+                    advice.append(f"    export PATH={up / 'bin'}:$PATH")
+                    return str(cand), advice
+
+    advice.append("no MPI launcher found on PATH or beside the linked MPI")
+    if libpath:
+        advice.append(f"  the binary resolves {soname} to {libpath},")
+        advice.append(f"  so an MPI IS installed -- its bin/ is just not on "
+                      f"PATH")
+    advice.append("  If M2C was built inside a conda/mamba environment, "
+                  "activate it:")
+    advice.append("    micromamba activate <env>   # or: conda activate <env>")
+    advice.append("  If it was built against a cluster module, load it:")
+    advice.append("    module avail mpi   &&   module load <the one used>")
+    advice.append("  Match the family above: launching a binary with another "
+                  "MPI's")
+    advice.append("  mpirun gives 'Invalid communicator', not a clear error.")
+    return None, advice
+
+
+def _run_deck(workdir, deck_name, exe, cores, minutes, label,
+              launcher="mpirun") -> bool:
+    cmd = [launcher, "-np", str(cores), exe, deck_name]
     print(f"  + cd {workdir} && {' '.join(cmd)}")
     t0 = time.perf_counter()
     try:
@@ -227,7 +317,7 @@ def _run_deck(workdir, deck_name, exe, cores, minutes, label) -> bool:
         bad(f"{label}: still running after {minutes:.0f} min -- killed")
         return False
     except OSError as exc:
-        bad(f"{label}: could not launch mpirun ({exc})")
+        bad(f"{label}: could not launch {launcher} ({exc})")
         return False
     dt = time.perf_counter() - t0
 
@@ -246,7 +336,7 @@ def _run_deck(workdir, deck_name, exe, cores, minutes, label) -> bool:
     return True
 
 
-def tier2_smoke(cfg, outdir, exe, cores, minutes) -> bool:
+def tier2_smoke(cfg, outdir, exe, cores, minutes, launcher="mpirun") -> bool:
     head("Tier 2: our generated deck (validates the BRIDGE)")
     info = write_problem_directory(cfg, str(outdir), cores=cores)
     est = cfg.estimate_resources(cores)
@@ -256,8 +346,30 @@ def tier2_smoke(cfg, outdir, exe, cores, minutes) -> bool:
           f"graded one)")
     if "atomic_files" in info:
         print(f"  wrote {len(info['atomic_files'])} atomic-data files")
+
+    # Do not start a run the timeout will certainly kill.
+    #
+    # `--scale full` on 8 cores estimates ~38 DAYS. Launching it under a
+    # 20-minute kill produces a [FAIL] that says nothing about the bridge:
+    # the deck would have been fine, it just never got near finishing. A
+    # tier that cannot answer its question should decline to run rather
+    # than answer it wrongly.
+    est_min = est["wall_hours_estimate"] * 60.0
+    if est_min > 4.0 * minutes:
+        warn(f"declining to launch: estimated {est_min / 60:.1f} h "
+             f"({est_min / 1440:.1f} days) against a {minutes:.0f} min kill")
+        print("      This tier checks that the deck STARTS and takes steps.")
+        print("      At this scale it cannot finish, so a timeout here would")
+        print("      say nothing about the bridge. Either:")
+        print(f"        python scripts/test_m2c.py --scale smoke")
+        print(f"        python scripts/test_m2c.py --scale full "
+              f"--minutes {est_min * 1.2:.0f}   # and mean it")
+        print("      The cost model itself has a known pending correction "
+              "(issue #34/#35);")
+        print("      treat this number as a guard rail, not a schedule.")
+        return None
     return _run_deck(outdir, "input.st", exe, cores, minutes,
-                     label="generated deck")
+                     label="generated deck", launcher=launcher)
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +456,7 @@ def main(argv=None) -> int:
     results["grammar"] = tier0_grammar(args.source)
     results["saha"] = tier05_saha(args.saha)
     if args.check_only:
-        return 0 if all(results.values()) else 1
+        return _summary(results)
 
     exe = m2c_binary()
     if not exe:
@@ -354,9 +466,30 @@ def main(argv=None) -> int:
         return 2
     print(f"\nbinary: {exe}")
 
+    # ---------------------------------------------------------------------
+    # One pre-flight for the launcher, before any tier tries to use it.
+    #
+    # Without this, a missing mpirun is reported once per tier as though
+    # each were a separate failure, and the summary blames the tiers. There
+    # is only one problem and it is not M2C's.
+    # ---------------------------------------------------------------------
+    head("MPI launcher")
+    launcher, advice = find_launcher(exe)
+    for line in advice:
+        print(f"  {line}")
+    if launcher is None:
+        bad("cannot run any deck without an MPI launcher")
+        print("\n  Nothing below this can run, so nothing below it is being")
+        print("  attempted. The grammar check above needs no MPI and passed;")
+        print("  that part of the bridge is fine.")
+        results["launcher"] = False
+        _summary(results)
+        return 2
+    ok(f"using {launcher}")
+
     if not args.skip_shipped:
         results["shipped"] = tier1_shipped(args.source, exe, args.cores,
-                                           args.minutes)
+                                           args.minutes, launcher=launcher)
 
     sc = run_scenario(args.projectile, args.target, mass=args.mass,
                       velocity=args.velocity, t_end=1e-5)
@@ -366,23 +499,43 @@ def main(argv=None) -> int:
                     velocity=sc.impact.projectile.velocity,
                     **SCALES[args.scale])
     outdir = Path(args.out).absolute()
-    results["smoke"] = tier2_smoke(cfg, outdir, exe, args.cores, args.minutes)
+    results["smoke"] = tier2_smoke(cfg, outdir, exe, args.cores, args.minutes,
+                                   launcher=launcher)
 
     if args.compare and results.get("smoke"):
         results["compare"] = tier3_compare(outdir, sc, cfg.target)
 
+    return _summary(results)
+
+
+def _summary(results) -> int:
+    """Three states, not two.
+
+    A tier that could not run is not a tier that passed. Printing `[ ok ]`
+    for a skipped Saha check -- which is what happened when every early
+    return said `True` -- claims the atomic data was verified when the
+    solver for it was never even present.
+    """
     head("Summary")
     for k, v in results.items():
-        (ok if v else bad)(k)
-    failed = [k for k, v in results.items() if not v]
+        if v is None:
+            warn(f"{k}  (skipped -- not run, so not evidence of anything)")
+        else:
+            (ok if v else bad)(k)
+    failed = [k for k, v in results.items() if v is False]
+    skipped = [k for k, v in results.items() if v is None]
     if failed:
         print(f"\n  first failure: {failed[0]} -- fix that before reading "
               f"anything below it")
         return 1
-    print("\n  All tiers passed. Note what this does and does not show:")
-    print("  the deck runs and its plasma is the right order of magnitude.")
-    print("  It does NOT show the mesh is converged -- for that, re-run at")
-    print("  --scale quick and then full and check the answer stops moving.")
+    if skipped:
+        print(f"\n  Nothing failed, but {len(skipped)} tier(s) were skipped: "
+              f"{', '.join(skipped)}.")
+        print("  The ladder is only as strong as the rungs that ran.")
+    print("\n  What a full pass does and does not show: the deck runs and its")
+    print("  plasma is the right order of magnitude. It does NOT show the")
+    print("  mesh is converged -- for that, re-run at --scale quick and then")
+    print("  full and check the answer stops moving.")
     return 0
 
 
