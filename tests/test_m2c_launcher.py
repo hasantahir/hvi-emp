@@ -6,16 +6,24 @@ for a check that never ran because the solver was not installed. Both are
 pinned here.
 """
 
-import os
+import importlib.util
 import stat
 import sys
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-
-import test_m2c as T
+# Load scripts/test_m2c.py by PATH, under a name of its own.
+#
+# `import test_m2c` does NOT get the script: tests/test_m2c.py is already in
+# sys.modules under that name, and pytest's rootdir import puts it first. The
+# tests then run against the wrong module and fail with AttributeError --
+# which is how this was caught, after the commit rather than before it.
+_SRC = Path(__file__).resolve().parents[1] / "scripts" / "test_m2c.py"
+_spec = importlib.util.spec_from_file_location("m2c_test_script", _SRC)
+T = importlib.util.module_from_spec(_spec)
+sys.modules["m2c_test_script"] = T
+_spec.loader.exec_module(T)
 
 
 def _exe(p: Path):
