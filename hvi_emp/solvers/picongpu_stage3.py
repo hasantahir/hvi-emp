@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import glob
 import os
+import re
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -589,10 +590,105 @@ namespace picongpu
     return text
 
 
+#: Aliases PIConGPU has moved between `.param` files across releases.
+#:
+#: Older checkouts declared these in `speciesDefinition.param`, which is why
+#: this generator used to declare them too. Current PIConGPU declares them in
+#: `species.param`, which is included first -- so declaring them again is a
+#: hard compile error, not a warning:
+#:
+#:     error: type "picongpu::UsedParticleShape" has already been defined
+#:            (previous definition at line 48 of .../param/species.param)
+#:
+#: The generated file therefore uses its own prefixed names for the types its
+#: own species flags need, and re-exports the upstream names only when the
+#: installed PIConGPU does not already provide them.
+SHARED_ALIASES = ("UsedParticleShape", "UsedField2Particle",
+                  "UsedParticlePusher", "UsedParticleCurrentSolver")
+
+#: `using Name =` at the start of a line. Deliberately not a full C++ parse:
+#: this only has to find top-level alias declarations in PIConGPU's own
+#: `.param` headers, which are written in exactly that form.
+_ALIAS_DECL = re.compile(r"^[ \t]*using[ \t]+(\w+)[ \t]*=", re.M)
+
+
+def find_picongpu(root: str | None = None) -> str | None:
+    """The PIConGPU source checkout, from the argument, $PICSRC or $PICONGPU.
+
+    Returns None rather than guessing: the caller falls back to the modern
+    layout and says so, which is better than emitting declarations that may
+    or may not collide.
+    """
+    cands = [root, os.environ.get("PICSRC"), os.environ.get("PICONGPU_ROOT"),
+             os.environ.get("PICONGPU"),
+             os.path.expanduser("~/src/picongpu"),
+             os.path.expanduser("~/picongpu")]
+    for c in cands:
+        if c and os.path.isdir(os.path.join(c, "include", "picongpu", "param")):
+            return c
+    return None
+
+
+def upstream_aliases(picongpu_root: str | None = None) -> dict:
+    """Which of `SHARED_ALIASES` the installed PIConGPU already declares.
+
+    Returns ``{name: "file:line"}``. An empty dict means either that the
+    checkout could not be found or that it declares none of them -- the
+    caller distinguishes those cases via `find_picongpu`.
+    """
+    root = find_picongpu(picongpu_root)
+    if root is None:
+        return {}
+    param_dir = os.path.join(root, "include", "picongpu", "param")
+    found: dict = {}
+    for fn in sorted(glob.glob(os.path.join(param_dir, "*.param"))):
+        try:
+            with open(fn, "r", errors="replace") as fh:
+                src = fh.read()
+        except OSError:
+            continue
+        for m in _ALIAS_DECL.finditer(src):
+            name = m.group(1)
+            if name in SHARED_ALIASES and name not in found:
+                line = src.count("\n", 0, m.start()) + 1
+                found[name] = f"{os.path.basename(fn)}:{line}"
+    return found
+
+
 def write_species_definition_param(cfg: PIConGPUConfig,
-                                   path: str | None = None) -> str:
-    """Electrons, ions and the probe species."""
+                                   path: str | None = None,
+                                   picongpu_root: str | None = None) -> str:
+    """Electrons, ions and the probe species.
+
+    The shared type aliases are emitted under an `Hvi` prefix so that this
+    file never collides with whichever `.param` the installed PIConGPU
+    declares `UsedParticleShape` and friends in. See `SHARED_ALIASES`.
+    """
     A = cfg.m_ion / AMU
+    found = upstream_aliases(picongpu_root)
+    root = find_picongpu(picongpu_root)
+
+    if root is None:
+        provenance = ("PIConGPU checkout not found (set $PICSRC), so the\n"
+                      "     * upstream aliases are assumed to exist and are "
+                      "not re-declared.\n"
+                      "     * If the build reports them as UNDECLARED rather "
+                      "than redefined,\n"
+                      "     * this checkout is an older one: set $PICSRC and "
+                      "regenerate.")
+        missing = ()
+    else:
+        provenance = (f"checked {os.path.basename(root)}: "
+                      + (", ".join(f"{k} in {v}" for k, v in sorted(found.items()))
+                         if found else "declares none of them"))
+        missing = tuple(a for a in SHARED_ALIASES if a not in found)
+
+    compat = ""
+    if missing:
+        compat = ("\n    /* This PIConGPU does not declare these itself, so\n"
+                  "     * provide them for any other .param that expects them. */\n"
+                  + "".join(f"    using {a} = Hvi{a[4:]};\n" for a in missing))
+
     text = _HEADER.format(
         what="Species: plume electrons, plume ions, and field probes.")
     text += f"""
@@ -606,28 +702,36 @@ def write_species_definition_param(cfg: PIConGPUConfig,
 
 namespace picongpu
 {{
-    /* ---- shared flags ------------------------------------------------- */
-    using UsedParticleShape = particles::shapes::PCS;    // cubic, low noise
-    using UsedField2Particle = FieldToParticleInterpolation<
-        UsedParticleShape, AssignedTrilinearInterpolation>;
-    using UsedParticlePusher = particles::pusher::Boris;
-    using UsedParticleCurrentSolver = currentSolver::Esirkepov<
-        UsedParticleShape>;
-
+    /* ---- shared flags -------------------------------------------------
+     *
+     * Prefixed, because PIConGPU declares UsedParticleShape,
+     * UsedField2Particle and UsedParticleCurrentSolver in species.param in
+     * current releases and in speciesDefinition.param in older ones.
+     * Re-declaring them is a compile error; our own names never collide.
+     *
+     * {provenance}
+     */
+    using HviParticleShape = particles::shapes::PCS;    // cubic, low noise
+    using HviField2Particle = FieldToParticleInterpolation<
+        HviParticleShape, AssignedTrilinearInterpolation>;
+    using HviParticlePusher = particles::pusher::Boris;
+    using HviParticleCurrentSolver = currentSolver::Esirkepov<
+        HviParticleShape>;
+{compat}
     value_identifier(float_X, MassRatioIon, {A * AMU / M_ELECTRON:.8e});
     value_identifier(float_X, ChargeRatioIon, {-cfg.Zbar:.8e});
 
     using ParticleFlagsElectrons = MakeSeq_t<
-        particlePusher<UsedParticlePusher>,
-        shape<UsedParticleShape>,
-        interpolation<UsedField2Particle>,
-        current<UsedParticleCurrentSolver>>;
+        particlePusher<HviParticlePusher>,
+        shape<HviParticleShape>,
+        interpolation<HviField2Particle>,
+        current<HviParticleCurrentSolver>>;
 
     using ParticleFlagsIons = MakeSeq_t<
-        particlePusher<UsedParticlePusher>,
-        shape<UsedParticleShape>,
-        interpolation<UsedField2Particle>,
-        current<UsedParticleCurrentSolver>,
+        particlePusher<HviParticlePusher>,
+        shape<HviParticleShape>,
+        interpolation<HviField2Particle>,
+        current<HviParticleCurrentSolver>,
         massRatio<MassRatioIon>,
         chargeRatio<ChargeRatioIon>>;
 
@@ -635,8 +739,8 @@ namespace picongpu
      * probeE and probeB, which is all we read back. */
     using ParticleFlagsProbes = MakeSeq_t<
         particlePusher<particles::pusher::Probe>,
-        shape<UsedParticleShape>,
-        interpolation<UsedField2Particle>>;
+        shape<HviParticleShape>,
+        interpolation<HviField2Particle>>;
 
     using ParticleAttributes = MakeSeq_t<position<position_pic>, momentum,
                                          weighting>;
@@ -822,7 +926,8 @@ PARAM_FILES = {
 
 def write_input_set(cfg: PIConGPUConfig, directory: str,
                     devices: tuple = (1, 1, 1),
-                    gpu: str | None = None) -> dict:
+                    gpu: str | None = None,
+                    picongpu_root: str | None = None) -> dict:
     """Write the .param and .cfg files in PIConGPU's directory layout.
 
     These are *overlay* files: run ``pic-create`` first to get a complete
@@ -839,7 +944,13 @@ def write_input_set(cfg: PIConGPUConfig, directory: str,
     written = {}
     for name, writer in PARAM_FILES.items():
         p = os.path.join(param_dir, name)
-        writer(cfg, p)
+        # speciesDefinition.param has to know what the installed PIConGPU
+        # already declares -- the shared aliases moved between .param files
+        # and re-declaring them is a compile error. See SHARED_ALIASES.
+        if name == "speciesDefinition.param":
+            writer(cfg, p, picongpu_root=picongpu_root)
+        else:
+            writer(cfg, p)
         written[name] = p
 
     ntask = int(np.prod(devices))
@@ -1110,6 +1221,7 @@ def compare_with_reduced_emp(ts: dict, emp_result) -> dict:
 
 __all__ = ["PIConGPUConfig", "write_simulation_param", "write_density_param",
            "write_particle_param", "write_species_definition_param",
+           "find_picongpu", "upstream_aliases", "SHARED_ALIASES",
            "write_species_initialization_param", "write_file_output_param",
            "write_cfg", "write_input_set", "write_run_notes",
            "build_command", "load_probe_timeseries", "compare_with_reduced_emp",
