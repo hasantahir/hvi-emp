@@ -19,15 +19,18 @@ were never connected.
 
 ```bash
 # 1. hydrocode (M2C), Tillotson EOS where constants are verified
-python -m hvi_emp.solvers.m2c_stage1 ...            # writes input.st as before
-mpirun -np 64 $M2C_HOME/m2c input.st                # writes results/solution.pvd
+python scripts/write_m2c_deck.py                    # -> runs/m2c/al_al_v32kms/input.st
+cd runs/m2c/al_al_v32kms
+mpirun -np 64 $M2C_HOME/m2c input.st > m2c.log 2>&1 &   # writes results/solution.pvd
+python ../../../scripts/watch_m2c.py m2c.log --follow --abort --pid $!
 
 # 2. handoff at the collisional -> collisionless transition
-python scripts/m2c_handoff.py full_chain/hydro/results
+cd ../../..                                         # back to the repo root
+python scripts/m2c_handoff.py runs/m2c/al_al_v32kms/results
 
 # 3. PIC initialised from the hydrocode's own plume
-python scripts/warpx_from_handoff.py full_chain/hydro/handoff/plume --ion Al
-cd full_chain/hydro/warpx && mpirun -np <N> python warpx_from_handoff.py
+python scripts/warpx_from_handoff.py runs/m2c/al_al_v32kms/handoff/plume --ion Al
+cd runs/m2c/al_al_v32kms/warpx && mpirun -np <N> python warpx_from_handoff.py
 ```
 
 ## Stage 1 — the hydrocode must survive the expanded states

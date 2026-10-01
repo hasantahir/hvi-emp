@@ -952,7 +952,9 @@ VERIFIED_KEYWORDS_SAMPLE = ["PartitionFunctionEvaluation", "MaxIts"]
 
 #: What M2C printed for the default Fe->Al deck, and what it then cost.
 _OBSERVED_CELLS = 994 * 356          # "Total number of nodes/cells: 353864"
-_OBSERVED_S_PER_STEP = 13.12         # steady state, steps 2-5, 32 ranks
+# Was 13.12 s/step from steps 2-5 -- the Saha solver's cold start, not
+# steady state. The full 12.4 h run averaged 44,740 s / 129,521 steps.
+_OBSERVED_S_PER_STEP = 44740.0 / 129521   # 0.345 s/step, sustained
 _OBSERVED_RANKS = 32
 
 
@@ -975,7 +977,11 @@ def test_cell_count_matches_the_graded_mesh_m2c_builds():
 
 
 def test_wall_time_matches_the_measured_run():
-    """End-to-end: cells x steps x rate must reproduce 9.4 days.
+    """End-to-end: cells x steps x rate must reproduce the measured rate.
+
+    "9.4 days" came from the cold-start rate. At the sustained rate the
+    CFL-step estimate is hours; the run took longer because dt shrank ~19x,
+    and the estimate's upper figure carries that.
 
     Two compensating errors used to hide each other here -- a 590x
     optimistic rate against a 16x pessimistic cell count. Pinning the
@@ -985,7 +991,7 @@ def test_wall_time_matches_the_measured_run():
     est = cfg.estimate_resources(cores=_OBSERVED_RANKS)
     measured_h = _OBSERVED_S_PER_STEP * est["n_steps"] / 3600.0
     assert est["wall_hours_estimate"] == pytest.approx(measured_h, rel=0.15)
-    assert est["wall_hours_estimate"] > 24.0      # days, not hours
+    assert est["wall_hours_estimate"] < 24.0 < est["wall_hours_if_dt_as_last_run"]
 
 
 def test_rate_is_flagged_measured_only_for_the_nonideal_path():
@@ -1003,7 +1009,11 @@ def test_rate_is_flagged_measured_only_for_the_nonideal_path():
 
 
 def test_ionisation_dominates_the_cost():
-    """The Saha solver, not the hydro, is what makes this expensive."""
+    """The Saha solver, not the hydro, is what makes this expensive.
+
+    By ~15x at the sustained rate. This asserted >100x when the rate was
+    the cold-start figure; the hydro-only rate is still assumed, not timed.
+    """
     from hvi_emp import get_material
     from hvi_emp.solvers.m2c_stage1 import M2CConfig
 
@@ -1011,7 +1021,7 @@ def test_ionisation_dominates_the_cost():
                 diameter=6.237e-6, velocity=5e4)
     on = M2CConfig(**base).estimate_resources(cores=32)
     off = M2CConfig(**base, ionisation="off").estimate_resources(cores=32)
-    assert on["wall_hours_estimate"] > 100 * off["wall_hours_estimate"]
+    assert on["wall_hours_estimate"] > 10 * off["wall_hours_estimate"]
 
 
 def test_results_directory_is_created(tmp_path):

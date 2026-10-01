@@ -47,3 +47,4 @@ in.impact
 *.swp
 .idea/
 .vscode/
+runs/

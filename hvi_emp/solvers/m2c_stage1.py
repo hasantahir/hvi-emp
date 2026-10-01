@@ -137,8 +137,24 @@ M2C_CONSTANTS = {
 #:
 #: The hydro-only figure is still an ASSUMPTION -- no run with ionisation
 #: off has been timed. Treat it as a lower bound.
-CELL_STEP_US_NONIDEAL = 1187.0     # measured, non-ideal Saha
+#:
+#: CORRECTION (Oct 2026): 1187 us was the STARTUP rate. Steps 2-5 are when
+#: the Saha solver starts cold and runs up to MaxIts = 200 iterations in
+#: every cell. The same deck's 12.4 h run then averaged 0.345 s/step over
+#: 129,521 steps on 32 ranks: 0.345 * 32 / 353,864 = 31.2 us per cell-step
+#: per core, 38x cheaper, once the solver warm-starts from the previous
+#: step. Plan with the sustained figure; the startup one is kept for the
+#: record.
+CELL_STEP_US_NONIDEAL = 31.2       # measured, sustained, non-ideal Saha
+CELL_STEP_US_NONIDEAL_STARTUP = 1187.0
 CELL_STEP_US_HYDRO = 2.0           # ASSUMED, ionisation off/ideal
+
+#: The CFL step `estimate_resources` computes from the impact speed and the
+#: bulk sound speed was ~19x larger than the average step the same 12.4 h run
+#: actually took (before its time step collapsed). The shocked material is
+#: hotter and stiffer than the estimate assumes. Reported as the pessimistic
+#: end of a range; a Tillotson run may well differ, and should be measured.
+DT_OPTIMISM_LAST_RUN = 19.0
 
 #: Mesh grading, matching what `_mesh_block` writes.
 _FINE_ZONE_RADII = 4.0             # fine out to 4 projectile radii
@@ -500,6 +516,10 @@ class M2CConfig:
             # True only for the non-ideal path, where the rate came from a
             # timed run. Say which, so nobody plans a week around a guess.
             "rate_is_measured": self.ionisation == "non-ideal",
+            # The CFL step is the bigger unknown. Bracket it with what the
+            # last real run showed rather than quoting one number.
+            "wall_hours_if_dt_as_last_run":
+                seconds * DT_OPTIMISM_LAST_RUN / 3600.0,
             "cost_dominated_by": ("non-ideal Saha (per cell, per step)"
                                   if self.ionisation == "non-ideal"
                                   else "hydro"),
