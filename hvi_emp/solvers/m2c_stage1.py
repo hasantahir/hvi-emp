@@ -392,6 +392,18 @@ class M2CConfig:
                 "aborts with signal 6 at start-up. Run "
                 "scripts/patch_m2c_tillotson.py on the M2C source and "
                 "rebuild M2C first (--selftest checks it).")
+        if self.ambient_pressure < NEAR_VACUUM_PA:
+            self.notes.append(
+                f"Ambient at {self.ambient_pressure:g} Pa is "
+                f"{self.projectile.rho0 / max(self.ambient_density(), 1e-300):.0e}"
+                f" times less dense than the metal. M2C does not survive that "
+                f"contrast: cells at the density floor next to it run away "
+                f"(1000 km/s at 76 ns in the Al->Al 32 km/s test) and dt "
+                f"collapses. In the same coarse test 1 Pa lasted to 250 ns and "
+                f"{ROBUST_AMBIENT_PA:g} Pa was still healthy at 450 ns. At "
+                f"{ROBUST_AMBIENT_PA:g} Pa the gas in the domain is still a "
+                f"small fraction of the projectile mass (ambient_mass_fraction)"
+                f", so it cannot slow the plume.")
         gas = _gas(self.ambient)        # validate early, not at write time
         # Resolution defaults depend on dimensionality: the axisymmetric
         # numbers are 2400 cells per axis, which is 5.8M cells in 2-D and
@@ -458,6 +470,16 @@ class M2CConfig:
     def mass(self) -> float:
         """Projectile mass [kg], for cross-checking against a scenario."""
         return self.projectile.rho0 * np.pi * self.diameter ** 3 / 6.0
+
+    def ambient_mass_fraction(self) -> float:
+        """Ambient gas mass in front of the target / projectile mass.
+
+        The gas the plume can sweep up inside the mesh, as a fraction of what
+        hits. Below ~1 % the gas cannot slow the plume in the domain, so its
+        pressure is a numerical choice, not a physical one.
+        """
+        half = self.domain_radii * self.radius
+        return self.ambient_density() * np.pi * half ** 3 / self.mass
 
     def ambient_density(self) -> float:
         """Ambient density [kg/m^3] from the ideal gas law at 300 K."""
@@ -605,7 +627,8 @@ VERIFIED_KEYWORDS = (
     "SpecificHeatAtConstantVolume", "ReferenceSpecificInternalEnergy",
     "ReferenceTemperature", "VolumetricStrainBreak", "StiffenedGasModel",
     "SpecificHeatRatio", "PressureConstant", "DensityCutOff",
-    "PressureCutOff", "DensityUpperLimit", "DensityPrescribedAtFailure",
+    "PressureCutOff", "DensityUpperLimit", "PressureUpperLimit",
+    "DensityPrescribedAtFailure",
     # Tillotson, from TillotsonModelData::setup in IoData.cpp
     "TillotsonModel", "a", "b", "A", "B", "Alpha", "Beta",
     "IncipientVaporizationDensity",
@@ -953,11 +976,34 @@ def _mie_gruneisen_block(mat: Material, mat_id: int, indent="  ") -> str:
 """
 
 
+#: The ambient gas's sound speed is capped at this many times the impact
+#: speed (and at least AMBIENT_C_FLOOR) through M2C's PressureUpperLimit.
+#: Why: when the target/projectile level set moves off a cell, M2C hands the
+#: cell to the ambient material and it can keep the metal's pressure. In the
+#: Al->Al 32 km/s run an ambient cell held 711 GPa at 2e-9 kg/m^3: c = 2.5e10
+#: m/s (80 c), and dt fell from 4e-11 to 1e-16 s at t = 8.5 ns. The cap is
+#: far above any sound speed the gas can reach physically (shocked by a plume
+#: at speed U, c ~ 0.6 U), so it only removes the carried-over pressure.
+AMBIENT_C_CAP_FACTOR = 4.0
+#: Below this ambient pressure [Pa] the deck warns (see M2CConfig notes).
+NEAR_VACUUM_PA = 1.0
+#: What scripts/write_m2c_deck.py uses by default [Pa].
+ROBUST_AMBIENT_PA = 100.0
+AMBIENT_C_FLOOR = 1.0e5         # m/s
+
+
+def ambient_pressure_cap(gas: dict, rho: float, velocity: float) -> float:
+    """PressureUpperLimit [Pa] for the ambient gas: p = rho c_cap^2 / gamma."""
+    c_cap = max(AMBIENT_C_CAP_FACTOR * velocity, AMBIENT_C_FLOOR)
+    return rho * c_cap ** 2 / gas["gamma"]
+
+
 def _stiffened_gas_block(gas: dict, rho: float, mat_id: int = 0,
-                         indent="  ") -> str:
+                         indent="  ", velocity: float = 0.0) -> str:
     """The ambient gas as an ideal (zero-`PressureConstant`) stiffened gas."""
     cv = N_AVOGADRO * K_B / (gas["M"] * (gas["gamma"] - 1.0))   # J/(kg K)
     rho_m2c = si_to_m2c(rho, "density")
+    p_cap = si_to_m2c(ambient_pressure_cap(gas, rho, velocity), "pressure")
     return f"""{indent}under Material[{mat_id}] {{ // ambient: {gas['label']}
 {indent}  EquationOfState = StiffenedGas;
 {indent}  under StiffenedGasModel {{
@@ -968,6 +1014,9 @@ def _stiffened_gas_block(gas: dict, rho: float, mat_id: int = 0,
 {indent}  }}
 {indent}  DensityCutOff = {rho_m2c * 1.0e-4:.6e};
 {indent}  PressureCutOff = 1.0e-10;
+{indent}  // Caps c at max(4 v_impact, 100 km/s). Without it, a cell the metal's
+{indent}  // level set leaves keeps the metal's pressure: c ~ 1e10 m/s, dt ~ 1e-16 s.
+{indent}  PressureUpperLimit = {p_cap:.6e};
 {indent}  DensityPrescribedAtFailure = {rho_m2c:.6e};
 {indent}}}
 """
@@ -1366,7 +1415,8 @@ def write_input(cfg: M2CConfig, path: str) -> str:
 
     # Material IDs follow the shipped deck: 0 ambient, 1 target, 2 projectile.
     equations = ("under Equations {\n"
-                 + _stiffened_gas_block(gas, rho_amb, 0)
+                 + _stiffened_gas_block(gas, rho_amb, 0,
+                                        velocity=cfg.velocity)
                  + _material_block(cfg, cfg.target, 1)
                  + _material_block(cfg, cfg.projectile, 2)
                  + "}\n")

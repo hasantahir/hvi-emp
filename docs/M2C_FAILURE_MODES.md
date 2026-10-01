@@ -100,7 +100,23 @@ Stock M2C has three bugs on that path, all reproduced by compiling its own
 | shock past 2 rho0 | on-demand extension starts with the previous step; asking for less than one step more makes `runge_kutta_45` return -1 |
 | plume below ~rho0/2 | marching backwards, `runge_kutta_45`'s first step is the whole interval; and below rho_IV the curve stalls on e = e_CV (Case 3 / Case 2 switch) |
 
-Fix and check:
+Running M2C itself on the deck (built in the sandbox from the same source)
+then found more, each the next thing to stop the run:
+
+| t | symptom | cause |
+|---|---|---|
+| step 2 | `Exit 255`, often no message | p -> e has no solution below rho_IV for pressures between Case 3 at e_CV- and Case 2 at e_CV+ (-32 to +8.3 GPa for Al); `exit(-1)` on one rank |
+| 28 ns | `Exit 255` | the exact Riemann solver evaluates the EOS at trial rho <= 0 before rejecting it; Tillotson exits where other EOSs return |
+| 72 ns | signal 6 | the solver's `rho<=0 \|\| c^2<0` stage test lets NaN through |
+| 81 ns | `Exit 255` | blend inverse with its root on e_IV to round-off |
+
+`Exit 255` with nothing on screen: M2C's `exit_mpi()` is `exit(-1)`, and
+`print_error` prints from rank 0 only, so a failure on another rank can be
+silent. `grep -n "Error" m2c.log` first; then rerun the same deck on fewer
+ranks.
+
+The patch now covers all of these (VarFcnTillot.h and
+ExactRiemannSolverBase.cpp). Fix and check:
 
 ```bash
 python scripts/patch_m2c_tillotson.py $M2C_HOME --selftest   # FAIL (aborts) before
@@ -114,6 +130,25 @@ rho0 for Al): the cohesive plateau. Vapour then gets T = T0 + (e - e_CV)/cv.
 Expanded material below e_CV gets T < 0, which the Saha solver treats as no
 ionisation -- right for a cold two-phase mixture, and the same as stock M2C
 would give if it did not abort.
+
+## 5. dt collapse from the near-vacuum ambient
+
+Two mechanisms, both from the 10^12 density contrast between metal and the
+1e-4 Pa "vacuum", both measured on the Al->Al 32 km/s deck:
+
+* **Pressure left behind.** When a metal level set leaves a cell, M2C gives
+  the cell to the ambient gas, and it can keep the metal's pressure. One
+  cell held 711 GPa at 2e-9 kg/m^3: c = 2.5e10 m/s, dt 4e-11 -> 1e-16 s at
+  8.5 ns. Fix in the deck: `PressureUpperLimit` on the ambient, capping its
+  sound speed at max(4 v_impact, 100 km/s) -- above anything the gas reaches
+  physically.
+* **Runaway at the density floor.** Metal cells clipped to DensityCutOff
+  (1e-6 rho0) keep their pressure and accelerate to ~1000 km/s (76 ns in a
+  coarse run). Fix: a denser ambient. In the same coarse run 1 Pa lasted to
+  250 ns and 100 Pa was healthy at 450 ns (where the test stopped).
+  `write_m2c_deck.py` now defaults to 100 Pa and prints the gas mass in front
+  of the target as a fraction of the projectile (0.4 % for 1 mm Al), which is
+  why it cannot slow the plume inside the mesh.
 
 ## Order to investigate
 

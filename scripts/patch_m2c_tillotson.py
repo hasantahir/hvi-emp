@@ -1,47 +1,40 @@
 #!/usr/bin/env python3
-"""Patch the aborts out of M2C's Tillotson cold curve, then rebuild M2C.
+"""Patch the aborts out of M2C's Tillotson path, then rebuild M2C.
 
     python scripts/patch_m2c_tillotson.py ~/src/m2c          # patch
     python scripts/patch_m2c_tillotson.py ~/src/m2c --check  # report only
     python scripts/patch_m2c_tillotson.py ~/src/m2c --selftest
     cd ~/src/m2c/build && make -j 16
 
---selftest compiles M2C's own VarFcnTillot.h on its own (g++, ~10 s) and
-drives it the way the impact run does. Unpatched, it aborts exactly as M2C
-did; patched, it prints PASS.
+Every fix below was found by running M2C itself (built from kevinwgy/m2c,
+Sep 2026) on the hvi_emp Al->Al 32 km/s deck, each one the next thing to
+stop it. Edits VarFcnTillot.h and ExactRiemannSolverBase.cpp.
 
-With `TemperatureDependsOnDensity = Yes` (the hvi_emp deck uses it, because
-`No` puts material at rest near -5300 K), M2C integrates the cold curve
-e_cold(rho) for T = T0 + (e - e_cold(rho))/cv, and aborts with signal 6 in
-three ways. All three are in VarFcnTillot.h, reproduced against M2C's own
-header (tests/test_m2c_patch.py compiles it when g++ is available).
+Signal 6 (assert):
+ 1. start-up: the constructor builds the cold curve e_cold(rho) before it
+    sets elat = eCV - eIV, then divides by it.
+ 2. shock past 2 rho0: on-demand extension asks RK45 for less than one step.
+ 3. plume below ~rho0/2: RK45 marching backwards takes the whole interval
+    as its first step; and below rho_IV the curve stalls on e = eCV. Now
+    RK4 in 0.2 % steps, held at eCV below the crossing (cohesive plateau).
+ 7. t ~ 72 ns: the exact Riemann solver's rarefaction stages test
+    rho<=0 || c^2<0, which NaN passes; NaN reaches Tillotson's assert.
 
-1. At start-up, on every rank (main -> constructor -> assert).
-   The constructor integrates the cold curve down to rho0/2 *before* it sets
-   `elat = eCV - eIV`. For Al the curve passes e_IV (3 MJ/kg) above rho0/2,
-   into the partial-vaporisation blend, which divides by `elat` -- still
-   uninitialised. The step goes non-finite; `assert(!err)` aborts.
-   Fix: set `elat` first.
+exit(-1), i.e. "Exit 255" with the message from one rank only:
+ 4. step 2: p -> e below rho_IV. Case 3 (e<eCV) and Case 2 (e>eCV) do not
+    meet -- for Al at 0.44 rho0, -32 GPa vs +8.3 GPa -- so a reconstructed
+    or Riemann pressure in between has no e. Now e = eCV.
+ 5,6. t ~ 28 ns: the Riemann solver evaluates the EOS at trial densities
+    <= 0 before rejecting them; every other M2C EOS returns a number,
+    Tillotson exited. Now it returns, and the caller rejects as designed.
+ 6b. t ~ 81 ns: the blend inverse finds its root on e_IV to round-off with
+    the wrong sign and exits for "incorrect inputs". Now takes the endpoint.
 
-2. Mid-run, once the shock compresses a cell past 2 rho0 (Al at 32 km/s
-   reaches ~2.5 rho0). The curve is extended on demand, starting with the
-   previous step size; asked for a density less than one step past its end,
-   runge_kutta_45 refuses (N <= 0) and the assert fires.
-   Fix: cap the first step at the requested extension.
+--selftest compiles M2C's own VarFcnTillot.h alone (g++, ~10 s) and drives
+the cold curve the way a run does: unpatched it aborts as M2C did.
 
-3. Mid-run, once any cell expands well below rho0/2 -- i.e. as soon as there
-   is a plume. runge_kutta_45's "do not step past tf" clamp only works
-   marching forward, so going down its first step is the whole interval
-   (to the density floor) and goes non-finite. Had it not, it would stall
-   anyway: below rho_IV e_cold rises to e_CV, where the EOS alternates
-   between Case 3 (p < 0) and Case 2 (p > 0) and the ODE has no solution
-   off the line e = e_CV.
-   Fix: integrate downwards with classical RK4 in 0.2 % density steps, stop
-   where e_cold reaches e_CV, and hold it there below that density -- the
-   cohesive plateau (e_CV = 13.9 MJ/kg for Al; measured cohesive energy
-   12.1 MJ/kg). Hot vapour then gets T = T0 + (e - e_CV)/cv.
-
-Idempotent; keeps VarFcnTillot.h.orig; refuses if the source does not match.
+Idempotent per edit (a source patched by an earlier version gets only what
+it lacks); keeps *.orig; refuses, changing nothing, if the source differs.
 """
 
 from __future__ import annotations
@@ -177,9 +170,86 @@ NEW_3 = """VarFcnTillot::ExtendColdEnergyTrajectoryDownwards(double rhomin)
   }
 }"""
 
+# --- 4. p -> e below rho_IV: no e exists for a band of pressures ------------
+# Below rho_IV the forward EOS is Case 3 for e < eCV and Case 2 above, and the
+# two do not meet: for Al at 0.44 rho0, P3(eCV-) = -32 GPa, P2(eCV+) = +8.3
+# GPa. Any (rho, p) with p in between -- a reconstructed or Riemann state, not
+# one the update itself produces -- has no inverse, and M2C exits(-1). Under
+# MPI only the failing rank prints, so the run just stops with exit code 255.
+OLD_4 = r"""      e = GetInternalEnergyPerUnitMass2(rho,p);
+      if(e<eCV) {
+        fprintf(stdout,"\033[0;31m*** Error: VarFcnTillot::GetInternalEnergyPerUnitMass failed for "
+                       "rho = %e, p = %e.\033[0m\n", rho, p);
+        exit(-1);
+      }"""
+NEW_4 = r"""      e = GetInternalEnergyPerUnitMass2(rho,p);
+      if(e<eCV) // hvi_emp patch: p lies in the gap between Case 3 at eCV- and
+        e = eCV; // Case 2 at eCV+, where no e gives it; take the discontinuity"""
+
+# --- 6b. blend inverse: a root sitting on e_IV within round-off -------------
+# GetInternalEnergyPerUnitMass sends p to the Case 1|2 blend when the Case 1
+# root is just above eIV. The blend equals Case 1 at eIV, so f(eIV) is zero
+# to round-off and can come out with the wrong sign (-1.3e-16 at t = 81 ns),
+# and M2C exits(-1) for "incorrect inputs". Take the endpoint nearer zero.
+OLD_8 = r"""  if(f_low*f_high>0) {
+    fprintf(stdout,"\033[0;31m*** Error: VarFcnTillot::GetInternalEnergyPerUnitMass12 called w. incorrect inputs."
+                   " rho = %e, p = %e. f(%e) = %e, f(%e) = %e.\033[0m\n",
+            rho, p, e_low, f_low, e_high, f_high);
+    exit(-1);
+  }"""
+NEW_8 = r"""  if(f_low*f_high>0) // hvi_emp patch: no sign change -- the root is at an
+    return fabs(f_low)<=fabs(f_high) ? e_low : e_high; // end, to round-off"""
+
+# --- 5. non-positive trial densities are the caller's to reject -------------
+# ExactRiemannSolverBase::Rarefaction_OneStepRK4 evaluates e(rho, p) and c^2 at
+# each RK stage *before* testing rho > 0, and treats rho <= 0 as "step too
+# big, retry smaller". Every other M2C EOS returns a number there; Tillotson
+# exits(-1). Seen at t = 28 ns in the Al->Al 32 km/s run.
+OLD_5 = r"""    if(rho<=0.0) {
+      fprintf(stdout,"\033[0;31m*** Error: VarFcnTillot::GetCaseWithRhoE detected non-positive rho (%e).\033[0m\n",
+              rho);
+      exit(-1);
+    }"""
+NEW_5 = r"""    if(!(rho>0.0)) // hvi_emp patch: trial states from the exact Riemann solver
+      return 0;    // (rho <= 0 or NaN); it rejects them itself after the call"""
+OLD_6 = r"""  if(rho<=0.0) {
+    fprintf(stdout,"\033[0;31m*** Error: VarFcnTillot::GetInternalEnergyPerUnitMass detected negative rho (%e).\033[0m\n",
+            rho);
+    exit(-1);
+  }"""
+NEW_6 = r"""  if(!(rho>0.0)) // hvi_emp patch: see GetCaseWithRhoE -- the caller rejects it
+    return 0.0;"""
+
 EDITS = [("elat before the cold curve", OLD_1, NEW_1),
          ("first step upwards", OLD_2, NEW_2),
-         ("downward cold curve", OLD_3, NEW_3)]
+         ("downward cold curve", OLD_3, NEW_3),
+         ("p -> e gap below rho_IV", OLD_4, NEW_4),
+         ("trial rho <= 0 (case)", OLD_5, NEW_5),
+         ("trial rho <= 0 (energy)", OLD_6, NEW_6),
+         ("blend root at an endpoint", OLD_8, NEW_8)]
+
+# --- 7. ExactRiemannSolverBase.cpp: reject NaN trial states too ------------
+# Each RK stage of the rarefaction integration tests `rho_k<=0 || c_k^2<0`.
+# Both comparisons are false for NaN, so a NaN stage (c^2 -> 0 or inf
+# upstream) is carried on and reaches the EOS -- in Tillotson, an assert
+# (rho >= rhoIV) and signal 6. Seen at t = 72 ns. NaN-safe: !(x>0), !(x>=0).
+RIEMANN_FILE = "ExactRiemannSolverBase.cpp"
+RIEMANN_RE = re.compile(r"if ?\(rho_(\d)<=0 \|\| c_\1_square<0\) ?\{")
+RIEMANN_NEW = (r"if(!(rho_\1>0) || !(c_\1_square>=0)) { "
+               r"// hvi_emp patch: NaN-safe")
+RIEMANN_COUNT = 10
+
+# A line of each NEW block that only the patch writes: lets a source patched
+# by an earlier version of this script receive just the edits it lacks.
+_SIGNATURE = {
+    "elat before the cold curve": "elat = eCV-eIV; // hvi_emp patch",
+    "first step upwards": "rhomax - rho_plus[mysize-1]); // hvi_emp patch",
+    "downward cold curve": "Classical RK4 in 0.2% density steps",
+    "p -> e gap below rho_IV": "e = eCV; // Case 2 at eCV+",
+    "trial rho <= 0 (case)": "(rho <= 0 or NaN); it rejects them itself",
+    "trial rho <= 0 (energy)": "see GetCaseWithRhoE -- the caller rejects it",
+    "blend root at an endpoint": "no sign change -- the root is at an",
+}
 
 
 def find_header(root: Path) -> Path:
@@ -191,8 +261,36 @@ def find_header(root: Path) -> Path:
                             "source directory, or its build/ directory)")
 
 
+def missing_edits(text: str) -> list:
+    """Edits to VarFcnTillot.h not yet applied to `text`."""
+    return [name for name, _, _ in EDITS if _SIGNATURE[name] not in text]
+
+
 def is_patched(text: str) -> bool:
-    return MARK in text
+    """VarFcnTillot.h text carries every edit (see also source_patched)."""
+    return not missing_edits(text)
+
+
+def riemann_patched(text: str) -> bool:
+    return not RIEMANN_RE.search(text) and "hvi_emp patch: NaN-safe" in text
+
+
+def source_patched(src: Path) -> bool:
+    """Both files of the M2C source tree `src` carry the patch."""
+    return (is_patched((src / "VarFcnTillot.h").read_text())
+            and riemann_patched((src / RIEMANN_FILE).read_text()))
+
+
+def patch_riemann_text(text: str) -> str:
+    if riemann_patched(text):
+        return text
+    n = len(RIEMANN_RE.findall(text))
+    if n != RIEMANN_COUNT:
+        raise ValueError(f"'{RIEMANN_FILE}': expected {RIEMANN_COUNT} "
+                         f"rarefaction-stage checks, found {n}. Your M2C "
+                         "differs from the version this patch was written "
+                         "for (kevinwgy/m2c, Sep 2026).")
+    return RIEMANN_RE.sub(RIEMANN_NEW, text)
 
 
 def _block(old: str) -> "re.Pattern[str]":
@@ -202,9 +300,10 @@ def _block(old: str) -> "re.Pattern[str]":
 
 
 def patch_text(text: str) -> str:
-    if is_patched(text):
-        return text
+    todo = missing_edits(text)
     for name, old, new in EDITS:
+        if name not in todo:
+            continue
         pat = _block(old)
         n = len(pat.findall(text))
         if n != 1:
@@ -249,6 +348,13 @@ def selftest(hdr: Path, cxx: str = "g++") -> int:
     return 1
 
 
+def _write(path: Path, new: str) -> None:
+    orig = path.with_name(path.name + ".orig")
+    if not orig.exists():           # keep the stock file, not a half-patched one
+        shutil.copy2(path, orig)
+    path.write_text(new)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         description=__doc__,
@@ -272,26 +378,42 @@ def main(argv=None) -> int:
     except FileNotFoundError as e:
         print(e)
         return 2
+    src = hdr.parent
+    rsv = src / RIEMANN_FILE
+    if not rsv.is_file():
+        print(f"{rsv} not found")
+        return 2
 
-    text = hdr.read_text()
     if args.selftest:
         return selftest(hdr, args.cxx)
+    htext, rtext = hdr.read_text(), rsv.read_text()
+    todo = missing_edits(htext)
+    rdo = not riemann_patched(rtext)
     if args.check:
-        print(f"{hdr}: {'patched' if is_patched(text) else 'NOT patched'}")
-        return 0 if is_patched(text) else 1
-    if is_patched(text):
-        print(f"{hdr}: already patched; nothing to do")
+        if not todo and not rdo:
+            print(f"{src}: patched")
+            return 0
+        print(f"{src}: NOT patched -- missing: "
+              + ", ".join(todo + ([RIEMANN_FILE] if rdo else [])))
+        return 1
+    if not todo and not rdo:
+        print(f"{src}: already patched; nothing to do")
         return 0
     try:
-        new = patch_text(text)
+        hnew = patch_text(htext)
+        rnew = patch_riemann_text(rtext)
     except ValueError as e:
-        print(f"refusing to patch {hdr}:\n  {e}")
+        print(f"refusing to patch {src} (nothing changed):\n  {e}")
         return 1
-    shutil.copy2(hdr, hdr.with_suffix(".h.orig"))
-    hdr.write_text(new)
-    build = hdr.parent / "build"
-    print(f"patched {hdr}  (original kept as {hdr.name}.orig)")
-    print("Rebuild M2C -- the header is compiled into Main.cpp:")
+    if todo:
+        _write(hdr, hnew)
+        print(f"patched {hdr.name}: {', '.join(todo)}")
+    if rdo:
+        _write(rsv, rnew)
+        print(f"patched {RIEMANN_FILE}: NaN-safe rarefaction stages")
+    print("stock files kept as *.orig")
+    build = src / "build"
+    print("Rebuild M2C:")
     print(f"  cd {build if build.is_dir() else '<your M2C build dir>'} "
           f"&& make -j 16")
     return 0

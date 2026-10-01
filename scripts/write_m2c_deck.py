@@ -53,6 +53,10 @@ def main(argv=None) -> int:
                     help="snapshots; the handoff picks among these")
     ap.add_argument("--eos", choices=("auto", "tillotson", "mie-gruneisen"),
                     default="auto")
+    ap.add_argument("--ambient-pressure", type=float, default=None,
+                    help="[Pa] ambient gas pressure; default 100 Pa. The "
+                         "experiments' 1e-4 Pa is a 1e12 density contrast "
+                         "M2C does not survive (docs/M2C_FAILURE_MODES.md)")
     ap.add_argument("--cores", type=int, default=64)
     ap.add_argument("--cells-per-radius", type=float,
                     help="resolution; cost goes as its cube in 2-D "
@@ -62,7 +66,10 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     from hvi_emp import get_material
-    from hvi_emp.solvers.m2c_stage1 import M2CConfig, write_problem_directory
+    from hvi_emp.solvers.m2c_stage1 import (ROBUST_AMBIENT_PA, M2CConfig,
+                                            write_problem_directory)
+    p_amb = (ROBUST_AMBIENT_PA if args.ambient_pressure is None
+             else args.ambient_pressure)
 
     proj, targ = get_material(args.projectile), get_material(args.target)
     speeds = FLETCHER_VELOCITIES if args.series else (args.velocity,)
@@ -71,6 +78,7 @@ def main(argv=None) -> int:
         cfg = M2CConfig(projectile=proj, target=targ, diameter=args.diameter,
                         velocity=v, t_end=args.t_end,
                         n_outputs=args.n_outputs, eos=args.eos,
+                        ambient_pressure=p_amb,
                         cells_per_radius=args.cells_per_radius)
         d = os.path.join(args.out, f"{proj.name.lower()}_{targ.name.lower()}"
                                    f"_v{v / 1e3:.0f}kms")
@@ -97,6 +105,9 @@ def main(argv=None) -> int:
             print(f"  {est.get('cells', 0) / 1e6:.2f} M cells; "
                   f"{h(lo)} on {args.cores} cores at the CFL step, "
                   f"{h(hi)} if the step shrinks as it did last run{days}")
+        print(f"  ambient {p_amb:g} Pa: gas in front of the target is "
+              f"{100 * cfg.ambient_mass_fraction():.2g} % of the projectile "
+              f"mass")
         for n in cfg.notes:
             print(f"  {YLW}! {n}{RST}")
 
