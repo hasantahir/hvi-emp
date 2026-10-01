@@ -90,10 +90,13 @@ def main(argv=None) -> int:
         if est:
             lo = est.get("wall_hours_estimate", float("nan"))
             hi = est.get("wall_hours_if_dt_as_last_run", float("nan"))
+            def h(x):
+                return f"{x:.1f} h" if x < 10 else f"{x:.0f} h"
+            days = (f" ({lo / 24:.1f}-{hi / 24:.0f} days)"
+                    if hi >= 48 else "")
             print(f"  {est.get('cells', 0) / 1e6:.2f} M cells; "
-                  f"{lo:.0f} h on {args.cores} cores at the CFL step, "
-                  f"{hi:.0f} h if the step shrinks as it did last run "
-                  f"({lo / 24:.1f}-{hi / 24:.0f} days)")
+                  f"{h(lo)} on {args.cores} cores at the CFL step, "
+                  f"{h(hi)} if the step shrinks as it did last run{days}")
         for n in cfg.notes:
             print(f"  {YLW}! {n}{RST}")
 
