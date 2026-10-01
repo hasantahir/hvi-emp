@@ -289,6 +289,13 @@ class M2CConfig:
         ``sphere`` is what `hvi_emp` models; ``rod`` matches the geometry of
         M2C's own shipped hypervelocity-impact test, which is the right
         choice when the point is to reproduce their result.
+    eos : {"auto", "tillotson", "mie-gruneisen"}
+        ``auto`` (default) uses Tillotson for every material with a verified
+        constant set in `TILLOTSON`, and Mie-Grueneisen for the rest -- with
+        a note, because Mie-Grueneisen is a compression fit and is not valid
+        once the material expands or vaporises. ``tillotson`` refuses to
+        write a deck if any solid lacks verified constants.
+        ``mie-gruneisen`` restores the old behaviour, for comparison.
     """
     projectile: Material
     target: Material
@@ -306,6 +313,7 @@ class M2CConfig:
     projectile_shape: str = "sphere"
     cfl: float = 0.1
     atomic_data_dir: str = "AtomicData"
+    eos: str = "auto"
 
     #: How M2C evaluates the partition function: OnTheFly | (Cubic)Spline.
     #:
@@ -343,6 +351,24 @@ class M2CConfig:
         if not 0.0 <= self.angle_deg < 90.0:
             raise ValueError(
                 f"angle_deg must be in [0, 90), got {self.angle_deg}")
+        if self.eos not in ("auto", "tillotson", "mie-gruneisen"):
+            raise ValueError("eos must be 'auto', 'tillotson' or "
+                             f"'mie-gruneisen', got {self.eos!r}")
+        for mat in (self.target, self.projectile):
+            if self.eos == "tillotson" and tillotson_for(mat) is None:
+                raise ValueError(
+                    f"eos='tillotson' but there is no verified Tillotson set "
+                    f"for {mat.name}. Register one with a source "
+                    f"(register_tillotson), or use eos='auto' to keep "
+                    f"{mat.name} on Mie-Grueneisen with a warning.")
+            if self.eos_for(mat) == "mie-gruneisen":
+                self.notes.append(
+                    f"{mat.name} uses ExtendedMieGruneisen, a compression-"
+                    f"branch fit with no vapour physics. Once {mat.name} "
+                    f"expands or vaporises the EOS is outside its range; this "
+                    f"is what collapsed the 50 km/s run's time step. Supply "
+                    f"sourced Tillotson constants for {mat.name} before "
+                    f"trusting any expanded {mat.name} state.")
         gas = _gas(self.ambient)        # validate early, not at write time
         # Resolution defaults depend on dimensionality: the axisymmetric
         # numbers are 2400 cells per axis, which is 5.8M cells in 2-D and
@@ -390,6 +416,12 @@ class M2CConfig:
                 f"is the point of running with a chamber gas at all.")
 
     # -- derived ----------------------------------------------------------
+    def eos_for(self, mat: Material) -> str:
+        """'tillotson' or 'mie-gruneisen' for this material under `eos`."""
+        if self.eos == "mie-gruneisen":
+            return "mie-gruneisen"
+        return "tillotson" if tillotson_for(mat) is not None else "mie-gruneisen"
+
     @property
     def is_3d(self) -> bool:
         """Oblique incidence is not axisymmetric, so it needs three axes."""
@@ -547,6 +579,12 @@ VERIFIED_KEYWORDS = (
     "ReferenceTemperature", "VolumetricStrainBreak", "StiffenedGasModel",
     "SpecificHeatRatio", "PressureConstant", "DensityCutOff",
     "PressureCutOff", "DensityUpperLimit", "DensityPrescribedAtFailure",
+    # Tillotson, from TillotsonModelData::setup in IoData.cpp
+    "TillotsonModel", "a", "b", "A", "B", "Alpha", "Beta",
+    "IncipientVaporizationDensity",
+    "IncipientVaporizationSpecificInternalEnergy",
+    "CompleteVaporizationSpecificInternalEnergy",
+    "TemperatureDependsOnDensity",
     # -- ionisation ---------------------------------------------------------
     "NonIdealSahaEquation", "IdealSahaEquation", "DepressionModel",
     "PartitionFunctionEvaluation", "MaxIts", "ConvergenceTolerance",
@@ -593,12 +631,253 @@ VERIFIED_VALUES: tuple = (
     "NonIdealSahaEquation", "IdealSahaEquation",
     # DepressionModel
     "Griem", "Ebeling",
+    # EquationOfState; TemperatureDependsOnDensity
+    "Tillotson", "ExtendedMieGruneisen", "Yes",
 )
+
+
+# ---------------------------------------------------------------------------
+# Tillotson equation of state
+# ---------------------------------------------------------------------------
+#
+# Why this exists
+# ---------------
+# The deck used to give every solid an `ExtendedMieGruneisen` EOS. That is a
+# compression-branch fit: it is calibrated on the shock Hugoniot and says
+# nothing defensible about expanded or vaporised material. A 50 km/s Al run
+# died after 12.4 h with Riemann states at 5% and 40% of solid density and
+# a time step implying a sound speed over 1000 c -- the EOS being evaluated
+# where it has no physics.
+#
+# Fletcher (2021) used SESAME tables, which cover vapour. Tillotson is the
+# open alternative M2C ships: it has explicit cold-expanded, hot-expanded
+# (vapour) and interpolated branches, and it is the standard choice for
+# hypervelocity impact.
+#
+# Two traps in M2C's implementation, both verified in VarFcnTillot.h and
+# IoData.cpp, and both silent:
+#
+#   1. Every TillotsonModel key that is omitted takes the default for WATER
+#      (Brundage 2013, Table 1). So the block below writes every key, and a
+#      test asserts it.
+#   2. With the default TemperatureDependsOnDensity = No, M2C computes
+#      T = T0 + (e - e0)/cv, where e0 is Tillotson's E0 -- an energy scale
+#      (5 MJ/kg for Al), not the ambient energy. Material at rest has e = 0,
+#      so it would sit at T0 - E0/cv ~ -5300 K, and that temperature feeds
+#      the Saha solver. TemperatureDependsOnDensity = Yes uses Brundage's
+#      T = T0 + (e - e_cold(rho))/cv with e_cold(rho0) = 0 instead.
+#      Leaving cv at its default of 0 is just as bad: T is then T0 forever
+#      and nothing ever ionises.
+
+@dataclass(frozen=True)
+class TillotsonParams:
+    """One material's Tillotson constants, in SI, with where they came from.
+
+    `source` is required and is written into the deck. A constant set with
+    no source is not accepted: an unattributed EOS is not reviewable, and
+    this one decides whether the plume exists at all.
+
+    `rho_iv_ratio` is NOT part of the standard Tillotson set (Tillotson
+    1962; Melosh 1989 do not have it). It is M2C's incipient-vaporisation
+    density, from Brundage (2013), below which the cold-expanded branch drops
+    the B*mu^2 term. See `rho_turnover`.
+    """
+    rho0: float          # kg/m^3
+    E0: float            # J/kg   -- energy scale in chi = 1/(E/(E0 eta^2)+1)
+    a: float
+    b: float
+    A: float             # Pa
+    B: float             # Pa
+    alpha: float
+    beta: float
+    E_iv: float          # J/kg   -- incipient vaporisation
+    E_cv: float          # J/kg   -- complete vaporisation
+    source: str
+    rho_iv_ratio: float | None = None
+
+    @property
+    def rho_iv(self) -> float:
+        """M2C's incipient-vaporisation density, derived unless overridden.
+
+        Not a tabulated Tillotson constant: Tillotson (1962) and Melosh
+        (1989) have no rho_IV, and the constants they tabulate were fitted to
+        the form WITHOUT one, where the E_iv..E_cv interpolation applies at
+        every density below rho0.
+
+        M2C instead uses the cold-expanded formula for every state below
+        rho_IV with e < E_cv -- including partially vaporised material. For
+        Al at 0.4 rho0 and 8 MJ/kg that gives about -40 GPa, which
+        PressureCutOff then clamps to 1 Pa: the expanding plume loses its
+        pressure. A high rho_IV (the first version of this used 0.8 rho0)
+        therefore switches off the vapour physics over most of the plume.
+
+        So the default is the lowest rho_IV M2C can take without the cold
+        curve turning over (`rho_turnover`), plus a 5% margin: the closest
+        M2C gets to the form the constants were fitted for.
+        """
+        if self.rho_iv_ratio is not None:
+            return self.rho_iv_ratio * self.rho0
+        floor = self.rho_turnover / self.rho0
+        return max(1.05 * floor, 0.05) * self.rho0
+
+    @property
+    def rho_iv_note(self) -> str:
+        if self.rho_iv_ratio is not None:
+            return (f"set explicitly to {self.rho_iv_ratio:.3f} rho0; not a "
+                    f"tabulated Tillotson constant")
+        return (f"derived = 1.05 x cold-curve turnover = "
+                f"{self.rho_iv / self.rho0:.3f} rho0. Not a tabulated "
+                f"Tillotson constant; the lowest value M2C allows without the "
+                f"cold curve turning over, i.e. closest to the original form")
+
+    @property
+    def rho_turnover(self) -> float:
+        """Density below which the compressed form's cold pressure turns up.
+
+        With e = 0 the compressed branch gives p = A mu + B mu^2, which has a
+        minimum at mu = -A/(2B). Below that density the formula predicts
+        pressure RISING as the metal expands -- unphysical. M2C switches to
+        the B-free form below rho_IV, so rho_IV must sit above this point or
+        a band of states uses the wrong curve.
+        """
+        if self.B <= 0.0:
+            return 0.0
+        return self.rho0 * max(1.0 - self.A / (2.0 * self.B), 0.0)
+
+    def validate(self, label: str = "") -> None:
+        """M2C's own constructor checks, plus the turnover bound.
+
+        Mirrors VarFcnTillot's exit(-1) conditions so a bad set fails here,
+        at deck-writing time, rather than after a job has queued.
+        """
+        who = f"{label}: " if label else ""
+        if not self.source.strip():
+            raise ValueError(f"{who}Tillotson constants need a source")
+        if self.E_cv <= self.E_iv:
+            raise ValueError(f"{who}E_cv ({self.E_cv:g}) must exceed E_iv "
+                             f"({self.E_iv:g}); M2C aborts otherwise")
+        if not 0.0 < self.rho_iv < self.rho0:
+            raise ValueError(f"{who}rho_IV ({self.rho_iv:g}) must lie in "
+                             f"(0, rho0 = {self.rho0:g}); M2C aborts otherwise")
+        if self.E0 <= 0.0:
+            raise ValueError(f"{who}E0 must be positive; M2C aborts otherwise")
+        if self.rho_iv < self.rho_turnover:
+            raise ValueError(
+                f"{who}rho_IV = {self.rho_iv:g} kg/m^3 is below the cold-curve "
+                f"turnover at {self.rho_turnover:g} kg/m^3, so between the two "
+                f"the compressed branch predicts pressure rising on expansion. "
+                f"Raise rho_iv_ratio above {self.rho_turnover / self.rho0:.3f}.")
+
+
+#: Verified constant sets only. A material absent from here does not get a
+#: guessed Tillotson EOS: `M2CConfig(eos="auto")` keeps it on Mie-Grueneisen
+#: and says so, and `eos="tillotson"` refuses.
+#:
+#: Tungsten is absent on purpose. No Tillotson set for W could be traced to a
+#: primary source while writing this, and Fletcher's W->Al series depends on
+#: the W projectile vaporising above 10-20 km/s -- exactly the regime where
+#: an unsourced EOS would decide the answer. Supply one with
+#: `register_tillotson("W", TillotsonParams(..., source="..."))`.
+TILLOTSON: dict = {
+    "Al": TillotsonParams(
+        rho0=2700.0, E0=5.0e6, a=0.5, b=1.63, A=75.2e9, B=65.0e9,
+        alpha=5.0, beta=5.0, E_iv=3.0e6, E_cv=13.9e6,
+        source="Tillotson (1962) GA-3216, as tabulated by Melosh (1989), "
+               "Impact Cratering, Table AII.3"),
+}
+
+
+def tillotson_pressure(p: TillotsonParams, rho, e):
+    """Pressure [Pa] from (rho [kg/m^3], e [J/kg]), mirroring M2C exactly.
+
+    A line-for-line Python transcription of VarFcnTillot::GetPressure and
+    its case selection (Cases 1, 2, 3 and the 1|2 blend), so the constants
+    written into a deck can be tested against what M2C will actually compute
+    -- not against a textbook form that M2C may not implement.
+    """
+    rho = np.asarray(rho, float)
+    e = np.asarray(e, float)
+    eta = rho / p.rho0
+    mu = eta - 1.0
+    omega = p.rho0 / rho - 1.0
+    chi_eta = 1.0 / (e / (p.E0 * eta * eta) + 1.0)
+    chi_om = 1.0 / (e / p.E0 * (omega + 1.0) ** 2 + 1.0)
+
+    p1 = (p.a + p.b * chi_eta) * rho * e + (p.A + p.B * mu) * mu
+    p2 = (p.a * rho * e
+          + (p.b * rho * e * chi_om + p.A * mu * np.exp(-p.beta * omega))
+          * np.exp(-p.alpha * omega * omega))
+    p3 = (p.a + p.b * chi_eta) * rho * e + p.A * (eta - 1.0)
+    p12 = ((p.E_cv - e) * p1 + (e - p.E_iv) * p2) / (p.E_cv - p.E_iv)
+
+    # GetCaseWithRhoE, in order.
+    return np.where(rho >= p.rho0, p1,
+           np.where(e >= p.E_cv, p2,
+           np.where(rho < p.rho_iv, p3,
+           np.where(e <= p.E_iv, p1, p12))))
+
+
+def register_tillotson(name: str, params: TillotsonParams) -> None:
+    """Add or replace a material's Tillotson constants, after validating."""
+    params.validate(name)
+    TILLOTSON[name] = params
+
+
+def tillotson_for(mat: Material) -> TillotsonParams | None:
+    """The verified constant set for `mat`, or None."""
+    return TILLOTSON.get(mat.name)
 
 
 # ---------------------------------------------------------------------------
 # Input-deck generation
 # ---------------------------------------------------------------------------
+
+def _tillotson_block(mat: Material, p: TillotsonParams, mat_id: int,
+                     indent: str = "  ") -> str:
+    """A `Tillotson` material block that writes EVERY key.
+
+    Any key left out silently takes M2C's water default, so nothing here is
+    optional -- `tests/test_m2c.py` checks the full set is present.
+    """
+    p.validate(mat.name)
+    rho = si_to_m2c(p.rho0, "density")
+    e = lambda v: si_to_m2c(v, "energy_per_mass")          # noqa: E731
+    return f"""{indent}under Material[{mat_id}] {{ // {mat.name}
+{indent}  // Tillotson: {p.source}
+{indent}  // rho_IV: {p.rho_iv_note}
+{indent}  EquationOfState = Tillotson;
+{indent}  under TillotsonModel {{
+{indent}    ReferenceDensity = {rho:.6e}; // g/mm3
+{indent}    ReferenceSpecificInternalEnergy = {e(p.E0):.6e}; // mm2/s2 (Tillotson E0)
+{indent}    a = {p.a:.6f};
+{indent}    b = {p.b:.6f};
+{indent}    A = {si_to_m2c(p.A, 'pressure'):.6e}; // Pa
+{indent}    B = {si_to_m2c(p.B, 'pressure'):.6e}; // Pa
+{indent}    Alpha = {p.alpha:.6f};
+{indent}    Beta = {p.beta:.6f};
+{indent}    IncipientVaporizationDensity = {si_to_m2c(p.rho_iv, 'density'):.6e}; // g/mm3
+{indent}    IncipientVaporizationSpecificInternalEnergy = {e(p.E_iv):.6e}; // mm2/s2
+{indent}    CompleteVaporizationSpecificInternalEnergy = {e(p.E_cv):.6e}; // mm2/s2
+{indent}    // T = T0 + (e - e_cold(rho))/cv. The default (No) uses e - E0, which
+{indent}    // puts material at rest near -5300 K and feeds that to Saha.
+{indent}    SpecificHeatAtConstantVolume = \
+{si_to_m2c(mat.cv_solid, 'specific_heat'):.6e}; // mm2/(s2 K)
+{indent}    ReferenceTemperature = 300.0;
+{indent}    TemperatureDependsOnDensity = Yes;
+{indent}  }}
+{indent}  DensityCutOff = {rho * 1.0e-6:.6e};
+{indent}  PressureCutOff = 1.0;
+{indent}  DensityPrescribedAtFailure = {rho:.6e};
+{indent}}}
+"""
+
+
+def _material_block(cfg: "M2CConfig", mat: Material, mat_id: int) -> str:
+    """Tillotson where a verified set exists and the config allows it."""
+    if cfg.eos_for(mat) == "tillotson":
+        return _tillotson_block(mat, tillotson_for(mat), mat_id)
+    return _mie_gruneisen_block(mat, mat_id)
+
 
 def _mie_gruneisen_block(mat: Material, mat_id: int, indent="  ") -> str:
     """An `ExtendedMieGruneisen` material block.
@@ -1054,8 +1333,8 @@ def write_input(cfg: M2CConfig, path: str) -> str:
     # Material IDs follow the shipped deck: 0 ambient, 1 target, 2 projectile.
     equations = ("under Equations {\n"
                  + _stiffened_gas_block(gas, rho_amb, 0)
-                 + _mie_gruneisen_block(cfg.target, 1)
-                 + _mie_gruneisen_block(cfg.projectile, 2)
+                 + _material_block(cfg, cfg.target, 1)
+                 + _material_block(cfg, cfg.projectile, 2)
                  + "}\n")
 
     # MaxChargeNumber = the number of stages the material YAML defines, so

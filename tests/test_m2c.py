@@ -236,8 +236,12 @@ class TestDeck:
             assert block in text, block
 
     def test_material_block_carries_the_converted_eos(self, tmp_path):
+        # The Mie-Grueneisen block is still what unsourced materials get, so
+        # its conversion is still worth pinning -- explicitly requested now
+        # that Al defaults to Tillotson (see test_m2c_tillotson.py).
         al = get_material("al")
-        text = m2c.write_input(_cfg(), str(tmp_path / "input.st"))
+        text = m2c.write_input(_cfg(eos="mie-gruneisen"),
+                               str(tmp_path / "input.st"))
         assert f"{m2c.si_to_m2c(al.rho0, 'density'):.6e}" in text
         assert f"{m2c.si_to_m2c(al.c0, 'velocity'):.6e}" in text
         assert f"HugoniotSlope = {al.s:.6f}" in text
@@ -250,7 +254,8 @@ class TestDeck:
         for name in ("al", "fe", "w", "cu"):
             mat = get_material(name)
             text = m2c.write_input(
-                _cfg(target=mat, projectile=mat), str(tmp_path / "i.st"))
+                _cfg(target=mat, projectile=mat, eos="mie-gruneisen"),
+                str(tmp_path / "i.st"))
             cap = float([ln for ln in text.splitlines()
                          if "DensityUpperLimit" in ln][0]
                         .split("=")[1].strip().rstrip(";"))
@@ -395,7 +400,8 @@ class TestDeck:
         emitted = set()
         for cfg in (_cfg(ambient="ar"),
                     _cfg(angle_deg=30.0, projectile_shape="rod"),
-                    _cfg(ionisation="ideal")):
+                    _cfg(ionisation="ideal"),
+                    _cfg(eos="mie-gruneisen")):
             text = m2c.write_input(cfg, str(tmp_path / "i.st"))
             code = "\n".join(ln.split("//")[0] for ln in text.splitlines())
             # left-hand sides and block names only: values such as
@@ -414,7 +420,8 @@ class TestDeck:
         emitted = set()
         for cfg in (_cfg(ambient="ar"),
                     _cfg(angle_deg=30.0, projectile_shape="rod"),
-                    _cfg(ionisation="ideal")):
+                    _cfg(ionisation="ideal"),
+                    _cfg(eos="mie-gruneisen")):
             text = m2c.write_input(cfg, str(tmp_path / "i.st"))
             emitted |= set(re.findall(r"[A-Za-z][A-Za-z0-9_]*", text))
         assert not (set(m2c.VERIFIED_KEYWORDS) - emitted), \

@@ -17,6 +17,12 @@ claims the reduced chain can answer. Nothing needs to be installed first.
 
 ---
 
+> **Update (Oct 2026): the waterfall is now implemented.** M2C output is read,
+> the plume is handed over at the collisional -> collisionless transition, and
+> WarpX is initialised from it, not from the analytic chain. M2C decks default
+> to Tillotson where constants are verified (Al). Tungsten still needs a sourced
+> EOS, so run Al -> Al first. See [`WATERFALL.md`](WATERFALL.md).
+
 ## 1. The obstacle, stated plainly
 
 Fletcher used **ALEGRA** (Sandia National Laboratories) with **SESAME** EOS
