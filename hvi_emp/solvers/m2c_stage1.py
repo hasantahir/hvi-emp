@@ -385,6 +385,13 @@ class M2CConfig:
                     f"is what collapsed the 50 km/s run's time step. Supply "
                     f"sourced Tillotson constants for {mat.name} before "
                     f"trusting any expanded {mat.name} state.")
+        if any(self.eos_for(m) == "tillotson"
+               for m in (self.target, self.projectile)):
+            self.notes.append(
+                "Tillotson with TemperatureDependsOnDensity = Yes: stock M2C "
+                "aborts with signal 6 at start-up. Run "
+                "scripts/patch_m2c_tillotson.py on the M2C source and "
+                "rebuild M2C first (--selftest checks it).")
         gas = _gas(self.ambient)        # validate early, not at write time
         # Resolution defaults depend on dimensionality: the axisymmetric
         # numbers are 2400 cells per axis, which is 5.8M cells in 2-D and
@@ -688,6 +695,11 @@ VERIFIED_VALUES: tuple = (
 #      T = T0 + (e - e_cold(rho))/cv with e_cold(rho0) = 0 instead.
 #      Leaving cv at its default of 0 is just as bad: T is then T0 forever
 #      and nothing ever ionises.
+#   3. Not silent: with Yes, stock M2C aborts (signal 6) -- at start-up, in
+#      the constructor, which integrates the cold curve before setting a
+#      quantity it divides by; and mid-run, extending the curve past 2 rho0
+#      or below ~rho0/2. scripts/patch_m2c_tillotson.py fixes all three and
+#      --selftest proves it against your M2C source. Patch, rebuild, run.
 
 @dataclass(frozen=True)
 class TillotsonParams:
@@ -880,6 +892,8 @@ def _tillotson_block(mat: Material, p: TillotsonParams, mat_id: int,
 {indent}    CompleteVaporizationSpecificInternalEnergy = {e(p.E_cv):.6e}; // mm2/s2
 {indent}    // T = T0 + (e - e_cold(rho))/cv. The default (No) uses e - E0, which
 {indent}    // puts material at rest near -5300 K and feeds that to Saha.
+{indent}    // Yes needs M2C patched (scripts/patch_m2c_tillotson.py): stock M2C
+{indent}    // aborts (signal 6) building or extending the cold curve.
 {indent}    SpecificHeatAtConstantVolume = \
 {si_to_m2c(mat.cv_solid, 'specific_heat'):.6e}; // mm2/(s2 K)
 {indent}    ReferenceTemperature = 300.0;

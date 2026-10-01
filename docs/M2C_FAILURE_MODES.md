@@ -75,6 +75,46 @@ aborts the run, but it is normally a **consequence**. Check the log for
 started thousands of steps earlier, the overlap is the symptom and not the
 disease.
 
+## 4. Signal 6 (abort) with a Tillotson deck
+
+```
+[reznor:...] Signal code:  (-6)
+[ 2] /lib64/libc.so.6(abort+0x127)
+[ 5] .../m2c(+0x359d4)
+[ 6] .../m2c(+0x36a1c)
+[ 7] .../m2c(+0x2c9b9)            <- main
+prterun noticed that process rank 26 ... exited on signal 6 (Aborted).
+```
+
+Three M2C frames, the last one `main`: the abort is in set-up, not in the
+time loop. It is `assert(!err)` in `VarFcnTillot.h`, and it happens on every
+rank (the rank number is just whichever reported first) with any core count.
+
+It is caused by `TemperatureDependsOnDensity = Yes`, which our deck needs.
+Stock M2C has three bugs on that path, all reproduced by compiling its own
+`VarFcnTillot.h`:
+
+| when | what |
+|---|---|
+| start-up | the constructor builds the cold curve before setting `elat = eCV - eIV`, then divides by it in the Case 1\|2 blend (Al's cold curve passes e_IV above rho0/2) |
+| shock past 2 rho0 | on-demand extension starts with the previous step; asking for less than one step more makes `runge_kutta_45` return -1 |
+| plume below ~rho0/2 | marching backwards, `runge_kutta_45`'s first step is the whole interval; and below rho_IV the curve stalls on e = e_CV (Case 3 / Case 2 switch) |
+
+Fix and check:
+
+```bash
+python scripts/patch_m2c_tillotson.py $M2C_HOME --selftest   # FAIL (aborts) before
+python scripts/patch_m2c_tillotson.py $M2C_HOME              # patch (keeps .orig)
+python scripts/patch_m2c_tillotson.py $M2C_HOME --selftest   # PASS
+make -C $M2C_HOME -j 16                                      # rebuild M2C
+```
+
+The patch holds e_cold at e_CV below the density where it reaches it (0.35
+rho0 for Al): the cohesive plateau. Vapour then gets T = T0 + (e - e_CV)/cv.
+Expanded material below e_CV gets T < 0, which the Saha solver treats as no
+ionisation -- right for a cold two-phase mixture, and the same as stock M2C
+would give if it did not abort.
+
 ## Order to investigate
 
 Cheapest first, and each one rules something out:

@@ -18,6 +18,9 @@ were never connected.
 ## Three commands
 
 ```bash
+# 0. once: stock M2C aborts on Tillotson + TemperatureDependsOnDensity = Yes
+python scripts/patch_m2c_tillotson.py $M2C_HOME && make -C $M2C_HOME -j 16
+
 # 1. hydrocode (M2C), Tillotson EOS where constants are verified
 python scripts/write_m2c_deck.py                    # -> runs/m2c/al_al_v32kms/input.st
 cd runs/m2c/al_al_v32kms
@@ -176,7 +179,8 @@ radiating shell is, and reports the explicit figure.
 
 | | status |
 |---|---|
-| M2C Tillotson deck | written and grammar-checked against M2C source; **not yet run** |
+| M2C Tillotson deck | written and grammar-checked against M2C source; first run aborted at start-up in stock M2C (docs/M2C_FAILURE_MODES.md §4) |
+| M2C Tillotson patch | M2C's own `VarFcnTillot.h` compiled and driven from 1e-6 to 5 rho0: aborts unpatched, passes patched. **Full M2C not rebuilt here** |
 | VTR reader | tested against PETSc's byte layout, multi-rank; **not yet on a real M2C file** |
 | handoff extractor | tested on synthetic clouds with known integrals |
 | WarpX particles and plan | tested |

@@ -33,7 +33,7 @@ from pathlib import Path
 _REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_REPO))
 
-GRN, YLW, RST = "\033[32m", "\033[33m", "\033[0m"
+GRN, YLW, RED, RST = "\033[32m", "\033[33m", "\033[31m", "\033[0m"
 FLETCHER_VELOCITIES = (12e3, 22e3, 32e3, 42e3, 52e3, 62e3)
 
 
@@ -99,6 +99,30 @@ def main(argv=None) -> int:
                   f"{h(hi)} if the step shrinks as it did last run{days}")
         for n in cfg.notes:
             print(f"  {YLW}! {n}{RST}")
+
+    m2c = os.environ.get("M2C_HOME")
+    if m2c:
+        sys.path.insert(0, str(_REPO / "scripts"))
+        from patch_m2c_tillotson import find_header, is_patched
+        try:
+            hdr = find_header(Path(m2c).expanduser().resolve())
+        except FileNotFoundError:
+            hdr = None
+        exe = Path(m2c).expanduser() / "m2c"
+        if hdr is not None and is_patched(hdr.read_text()):
+            if exe.is_file() and exe.stat().st_mtime < hdr.stat().st_mtime:
+                print(f"\n{RED}M2C source is patched but {exe} is older than "
+                      f"the patch: rebuild it first.{RST}")
+                print(f"  make -C {exe.parent} -j 16")
+            else:
+                print(f"\n{GRN}M2C source is patched for Tillotson "
+                      f"({hdr}).{RST}")
+        elif hdr is not None:
+            print(f"\n{RED}M2C at {hdr.parent} is NOT patched; it will abort "
+                  f"(signal 6) on this deck. First:{RST}")
+            print(f"  python {_REPO / 'scripts' / 'patch_m2c_tillotson.py'} "
+                  f"{hdr.parent}")
+            print(f"  make -C {hdr.parent / 'build'} -j 16")
 
     print("\nRun, with the dt-collapse watchdog alongside:")
     print("  cd <dir>")

@@ -116,7 +116,10 @@ class TestConfig:
 
     def test_oblique_incidence_is_flagged_in_the_notes(self):
         assert any("3-D Cartesian" in n for n in _cfg(angle_deg=30.0).notes)
-        assert _cfg().notes == []
+        # normal incidence: nothing about geometry (Al's Tillotson note
+        # about patching M2C is the only one)
+        assert [n for n in _cfg().notes
+                if "patch_m2c_tillotson" not in n] == []
 
     def test_three_d_gets_its_own_mesh_defaults(self):
         # Cubing the axisymmetric defaults is ~461M cells / 86 GB.
